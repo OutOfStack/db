@@ -1,0 +1,55 @@
+# Example commands for the Simple DB service
+
+# Set a key-value pair
+SET user_name John
+
+# Get the value for a key
+GET user_name
+
+# Set another key-value pair
+SET age 30
+
+# Get multiple values
+GET user_name
+GET age
+
+# Delete a key
+DEL age
+
+# Try to get a deleted key
+GET age
+
+# Try invalid commands
+SET invalid_key  # Missing value argument
+GET invalid_key invalid_value  # Too many arguments
+UNKNOWN invalid_command  # Unknown command
+
+# Set a key with special characters
+SET path/to/file.txt /home/user/documents/file.txt
+
+# Get the special characters key
+GET path/to/file.txt
+
+# Set a key with underscore
+SET user_id user_123
+
+# Get the underscore key
+GET user_id
+
+# Set a key with numbers
+SET user123 John123
+
+# Get the numeric key
+GET user123
+
+# Delete all set keys
+DEL user_name
+DEL path/to/file.txt
+DEL user_id
+DEL user123
+
+# Verify all keys are deleted
+GET user_name
+GET path/to/file.txt
+GET user_id
+GET user123
