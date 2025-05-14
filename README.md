@@ -88,13 +88,19 @@ exit
 ## Project Structure
 
 ```
-.
-├── cmd/           # Command-line interface
-├── compute/       # Request handling
-├── mocks/         # Mocks for testing
-├── parser/        # Command parsing
-├── storage/       # Storage layer
-└── examples/      # Example commands
+├── cmd/                    # Command-line applications
+│   └── db/                # Main application
+│       └── main.go
+├── internal/              # Internal packages
+│   ├── compute/          # Request handling and command execution
+│   │   ├── compute.go
+│   ├── engine/           # Storage engine implementation
+│   │   ├── engine.go
+│   ├── parser/           # Command parsing
+│   │   ├── parser.go
+│   └── storage/          # Storage layer
+│       ├── storage.go
+└── go.mod
 ```
 
 ## Development
