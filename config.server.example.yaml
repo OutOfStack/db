@@ -1,0 +1,15 @@
+# Example server configuration file
+# Copy this to config.yaml and modify as needed
+
+engine:
+  type: "in_memory"
+
+network:
+  address: "127.0.0.1:3223"
+  max_connections: 100
+  max_message_size: 4
+  idle_timeout: 5m
+
+logging:
+  level: "info"
+  output: ""  # Empty for stdout, or specify file path like "/var/log/db.log"

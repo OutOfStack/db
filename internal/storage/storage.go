@@ -1,5 +1,3 @@
-//go:generate mockgen -source storage.go -destination=mocks/storage.go -package=storage_mocks
-
 package storage
 
 import (
@@ -19,7 +17,7 @@ type Storage struct {
 	engine Engine
 }
 
-// Storage is an interface for a storage layer that provides a simple key-value store
+// New returns a new Storage instance
 func New(engine Engine) *Storage {
 	return &Storage{engine: engine}
 }

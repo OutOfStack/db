@@ -6,6 +6,11 @@ import (
 	"sync"
 )
 
+const (
+	// TypeInMemory is the type for the in-memory engine
+	TypeInMemory = "in_memory"
+)
+
 // Engine is an in-memory key-value store
 type Engine struct {
 	store map[string]string

@@ -13,7 +13,6 @@ linters:
     - containedctx
     - contextcheck
     - copyloopvar
-    - cyclop
     - decorder
     - dogsled
     - dupl
@@ -94,7 +93,6 @@ linters:
     - usetesting
     - wastedassign
     - whitespace
-    - wsl
     - zerologlint
   settings:
     goconst:
@@ -109,6 +107,10 @@ linters:
       rules:
         - name: package-comments
           disabled: true
+    tagliatelle:
+      case:
+        rules:
+          yaml: snake
   exclusions:
     generated: lax
     warn-unused: true

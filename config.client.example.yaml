@@ -1,0 +1,7 @@
+# Example client configuration file
+# Copy this to client.yaml and modify as needed
+
+network:
+  address: "127.0.0.1:3223"
+  max_message_size: 4
+  idle_timeout: 1m
