@@ -74,7 +74,7 @@ func main() {
 
 		response, sErr := client.Send([]byte(input + "\n"))
 		if sErr != nil {
-			fmt.Printf("Failed to send command: %v\n", err)
+			fmt.Printf("Failed to send command: %v\n", sErr)
 			break
 		}
 		fmt.Printf("%s\n", strings.TrimSpace(string(response)))
