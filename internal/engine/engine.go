@@ -6,6 +6,16 @@ import (
 	"sync"
 )
 
+const (
+	// TypeInMemory is the type for the in-memory engine
+	TypeInMemory = "in_memory"
+)
+
+var (
+	// ErrNotFound is the error returned when a key is not found
+	ErrNotFound = errors.New("key not found")
+)
+
 // Engine is an in-memory key-value store
 type Engine struct {
 	store map[string]string
@@ -36,7 +46,7 @@ func (e *Engine) Get(_ context.Context, key string) (string, error) {
 
 	val, ok := e.store[key]
 	if !ok {
-		return "", errors.New("not found")
+		return "", ErrNotFound
 	}
 
 	return val, nil
@@ -48,7 +58,7 @@ func (e *Engine) Del(_ context.Context, key string) error {
 	defer e.mu.Unlock()
 
 	if _, ok := e.store[key]; !ok {
-		return errors.New("not found")
+		return ErrNotFound
 	}
 
 	delete(e.store, key)

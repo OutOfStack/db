@@ -1,10 +1,11 @@
-//go:generate mockgen -source compute.go -destination=mocks/compute.go -package=compute_mocks
-
 package compute
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+
+	"github.com/OutOfStack/db/internal/storage"
 )
 
 // Storage is an interface for a storage layer
@@ -17,23 +18,23 @@ type Parser interface {
 	Parse(input string) (string, []string, error)
 }
 
-// Compute is an interface for a compute layer
+// Compute represents compute layer
 type Compute struct {
 	parser  Parser
 	storage Storage
 	logger  *slog.Logger
 }
 
-// New creates a new Compute with the given parser, storage, and logger.
+// New creates a new Compute with the given parser, storage, and logger
 func New(parser Parser, storage Storage, logger *slog.Logger) *Compute {
 	return &Compute{parser: parser, storage: storage, logger: logger}
 }
 
-// HandleRequest processes the input request string and returns the result or an error.
+// HandleRequest processes the input request string and returns the result or an error
 func (c *Compute) HandleRequest(ctx context.Context, input string) (string, error) {
 	cmd, args, err := c.parser.Parse(input)
 	if err != nil {
-		c.logger.Error("Parse error", "err", err)
+		c.logger.Error("Parse error", "error", err)
 		return "", err
 	}
 
@@ -41,7 +42,11 @@ func (c *Compute) HandleRequest(ctx context.Context, input string) (string, erro
 
 	result, err := c.storage.Execute(ctx, cmd, args)
 	if err != nil {
-		c.logger.Error("Storage execution error", "err", err)
+		if errors.Is(err, storage.ErrNotFound) {
+			c.logger.Info("Key not found", "key", args[0])
+		} else {
+			c.logger.Error("Storage execution error", "error", err)
+		}
 		return "", err
 	}
 
