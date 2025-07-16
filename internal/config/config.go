@@ -62,7 +62,6 @@ func LoadServerConfig(filename string) (*ServerConfig, error) {
 		return nil, err
 	}
 
-	// If file doesn't exist, return default config
 	if data == nil {
 		return DefaultServerConfig(), nil
 	}
@@ -90,7 +89,6 @@ func LoadClientConfig(filename string) (*ClientConfig, error) {
 		return nil, err
 	}
 
-	// If file doesn't exist, return default config
 	if data == nil {
 		return DefaultClientConfig(), nil
 	}

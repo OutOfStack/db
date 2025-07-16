@@ -2,7 +2,10 @@ package compute
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+
+	"github.com/OutOfStack/db/internal/storage"
 )
 
 // Storage is an interface for a storage layer
@@ -39,7 +42,11 @@ func (c *Compute) HandleRequest(ctx context.Context, input string) (string, erro
 
 	result, err := c.storage.Execute(ctx, cmd, args)
 	if err != nil {
-		c.logger.Error("Storage execution error", "error", err)
+		if errors.Is(err, storage.ErrNotFound) {
+			c.logger.Info("Key not found", "key", args[0])
+		} else {
+			c.logger.Error("Storage execution error", "error", err)
+		}
 		return "", err
 	}
 

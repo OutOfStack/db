@@ -118,6 +118,8 @@ network:
 #### Connect with default settings:
 ```bash
 ./bin/db-cli
+# or
+make run-cli
 ```
 
 #### Connect with configuration file:
@@ -191,30 +193,21 @@ go build -o bin/db-cli ./cmd/db-cli
 ├── config.server.example.yaml   # Example server configuration
 └── internal/                    # Internal packages
     ├── compute/                 # Request handling and command execution
-    │   ├── compute.go
-    │   ├── compute_test.go
-    │   └── mocks/
-    │       └── compute.go
+    │   └── compute.go
     ├── config/                  # Configuration management
     │   ├── config.go           # Common configuration utilities
-    │   ├── config_test.go      # Configuration tests
     │   ├── client.go           # Client configuration
     │   └── server.go           # Server configuration
     ├── engine/                  # Storage engine implementation
-    │   ├── engine.go
-    │   └── engine_test.go
+    │   └── engine.go
     ├── network/                 # TCP networking layer
     │   ├── client.go           # TCP client implementation
     │   ├── server.go           # TCP server implementation
     │   └── options.go          # Functional options
     ├── parser/                  # Command parsing
-    │   ├── parser.go
-    │   └── parser_test.go
+    │   └── parser.go
     └── storage/                 # Storage layer
-        ├── storage.go
-        ├── storage_test.go
-        └── mocks/
-            └── storage.go
+        └── storage.go
 ```
 
 ## Development

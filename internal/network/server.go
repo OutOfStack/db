@@ -11,6 +11,11 @@ import (
 	"time"
 )
 
+const (
+	defaultBufferSize = 1024
+	defaultTimeout    = 1 * time.Minute
+)
+
 // RequestHandler is a function that handles a client request
 type RequestHandler func(context.Context, []byte) []byte
 
@@ -41,6 +46,8 @@ func NewTCPServer(address string, logger *slog.Logger, options ...TCPServerOptio
 		listener:            listener,
 		logger:              logger,
 		connectionSemaphore: make(chan struct{}, 100),
+		bufferSize:          defaultBufferSize,
+		idleTimeout:         defaultTimeout,
 	}
 
 	for _, option := range options {
@@ -127,15 +134,15 @@ func (s *TCPServer) handleConnection(ctx context.Context, conn net.Conn, handler
 				break
 			}
 
-			// process the request
+			// process request
 			response := handler(ctx, buf[:n])
 
-			// set the write deadline
+			// set write deadline
 			if err = conn.SetWriteDeadline(time.Now().Add(s.idleTimeout)); err != nil {
 				s.logger.Error("Failed to set write deadline", "error", err)
 				return
 			}
-			// send the response
+			// send response
 			if _, err = conn.Write(response); err != nil {
 				s.logger.Error("Failed to send response", "error", err)
 				return

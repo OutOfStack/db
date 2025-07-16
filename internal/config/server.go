@@ -48,7 +48,7 @@ func DefaultServerConfig() *ServerConfig {
 			Address:          "127.0.0.1:3223",
 			MaxConnections:   100,
 			MaxMessageSizeKB: 4,
-			IdleTimeout:      1 * time.Minute,
+			IdleTimeout:      time.Minute,
 		},
 		Logging: ServerLoggingConfig{
 			Level:  "info",

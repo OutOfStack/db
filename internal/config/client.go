@@ -25,7 +25,7 @@ func DefaultClientConfig() *ClientConfig {
 		Network: ClientNetworkConfig{
 			Address:          "127.0.0.1:3223",
 			MaxMessageSizeKB: 4,
-			IdleTimeout:      1 * time.Minute,
+			IdleTimeout:      time.Minute,
 		},
 	}
 }

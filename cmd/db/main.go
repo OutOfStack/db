@@ -39,7 +39,7 @@ func main() {
 	}
 
 	opts := &slog.HandlerOptions{Level: level}
-	logger = slog.New(slog.NewTextHandler(os.Stdout, opts))
+	logger = slog.New(slog.NewJSONHandler(os.Stdout, opts))
 	if cfg.Logging.Output != "" {
 		file, fErr := os.OpenFile(cfg.Logging.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
 		if fErr != nil {
@@ -51,7 +51,7 @@ func main() {
 				logger.Error("Failed to close log file", "error", fErr)
 			}
 		}()
-		logger = slog.New(slog.NewTextHandler(file, opts))
+		logger = slog.New(slog.NewJSONHandler(file, opts))
 	}
 
 	store := storage.New(engine.New())
@@ -68,6 +68,8 @@ func main() {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+
+	logger.Info("Server started", "address", cfg.Network.Address)
 
 	go srv.Start(ctx, func(ctx context.Context, req []byte) []byte {
 		res, rErr := comp.HandleRequest(ctx, string(req))

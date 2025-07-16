@@ -16,8 +16,11 @@ build-cli:
 	go build -o bin/$(APP)-cli cmd/db-cli/main.go
 
 
-run: build
+run: build-db
 	go run ./cmd/db/.
+
+run-cli: build-cli
+	go run ./cmd/db-cli/.
 
 test:
 	go test -v -race ./...
