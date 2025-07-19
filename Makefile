@@ -46,3 +46,4 @@ generate:
   	fi
 	${MOCKGEN_BIN} -source=internal/compute/compute.go -destination=internal/compute/mocks/compute.go -package=compute_mocks
 	${MOCKGEN_BIN} -source=internal/storage/storage.go -destination=internal/storage/mocks/storage.go -package=storage_mock
+	${MOCKGEN_BIN} -destination=internal/network/mocks/net.go -package=network_mocks net Conn,Listener
