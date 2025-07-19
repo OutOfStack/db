@@ -127,3 +127,59 @@ network:
 		assert.Contains(t, err.Error(), "invalid config: idleTimeout must be positive")
 	})
 }
+
+func TestServerConfigValidate(t *testing.T) {
+	cfg := config.DefaultServerConfig()
+	require.NoError(t, cfg.Validate())
+
+	t.Run("invalid engine", func(t *testing.T) {
+		c := config.DefaultServerConfig()
+		c.Engine.Type = "bad"
+		err := c.Validate()
+		require.Error(t, err)
+	})
+
+	t.Run("invalid network values", func(t *testing.T) {
+		c := config.DefaultServerConfig()
+		c.Network.Address = ""
+		err := c.Validate()
+		require.Error(t, err)
+
+		c = config.DefaultServerConfig()
+		c.Network.MaxConnections = 0
+		err = c.Validate()
+		require.Error(t, err)
+
+		c = config.DefaultServerConfig()
+		c.Network.MaxMessageSizeKB = 0
+		err = c.Validate()
+		require.Error(t, err)
+
+		c = config.DefaultServerConfig()
+		c.Network.IdleTimeout = 0
+		err = c.Validate()
+		require.Error(t, err)
+	})
+}
+
+func TestClientConfigValidate(t *testing.T) {
+	cfg := config.DefaultClientConfig()
+	require.NoError(t, cfg.Validate())
+
+	t.Run("invalid network values", func(t *testing.T) {
+		c := config.DefaultClientConfig()
+		c.Network.Address = ""
+		err := c.Validate()
+		require.Error(t, err)
+
+		c = config.DefaultClientConfig()
+		c.Network.MaxMessageSizeKB = -1
+		err = c.Validate()
+		require.Error(t, err)
+
+		c = config.DefaultClientConfig()
+		c.Network.IdleTimeout = 0
+		err = c.Validate()
+		require.Error(t, err)
+	})
+}
