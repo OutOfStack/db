@@ -1,7 +1,7 @@
 package pool
 
 import (
-	"math/rand"
+	"math/rand/v2"
 	"sync"
 	"time"
 )
@@ -41,7 +41,7 @@ func (s *MasterFirstSelector) Select() *ServerConfig {
 	defer s.mu.Unlock()
 
 	// Try masters first
-	for i := 0; i < len(s.masters); i++ {
+	for i := range len(s.masters) {
 		idx := (s.currentMaster + i) % len(s.masters)
 		server := &s.masters[idx]
 		if !s.isFailed(server.Address) {
@@ -51,7 +51,7 @@ func (s *MasterFirstSelector) Select() *ServerConfig {
 	}
 
 	// Fall back to standbys
-	for i := 0; i < len(s.standbys); i++ {
+	for i := range len(s.standbys) {
 		idx := (s.currentStandby + i) % len(s.standbys)
 		server := &s.standbys[idx]
 		if !s.isFailed(server.Address) {
@@ -109,7 +109,7 @@ func (s *RoundRobinSelector) Select() *ServerConfig {
 		return nil
 	}
 
-	for i := 0; i < len(s.servers); i++ {
+	for i := range len(s.servers) {
 		idx := (s.current + i) % len(s.servers)
 		server := &s.servers[idx]
 		if !s.isFailed(server.Address) {
@@ -146,7 +146,6 @@ type RandomSelector struct {
 	mu            sync.RWMutex
 	servers       []ServerConfig
 	failedServers map[string]time.Time
-	rnd           *rand.Rand
 }
 
 // NewRandomSelector creates a new random selector
@@ -154,7 +153,6 @@ func NewRandomSelector(config *PoolConfig) *RandomSelector {
 	return &RandomSelector{
 		servers:       config.Servers,
 		failedServers: make(map[string]time.Time),
-		rnd:           rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 }
 
@@ -179,7 +177,8 @@ func (s *RandomSelector) Select() *ServerConfig {
 		return nil
 	}
 
-	idx := available[s.rnd.Intn(len(available))]
+	//nolint:gosec // Non-cryptographic random is sufficient for server selection
+	idx := available[rand.IntN(len(available))]
 	return &s.servers[idx]
 }
 
@@ -203,6 +202,8 @@ func (s *RandomSelector) isFailed(address string) bool {
 }
 
 // NewSelector creates a selector based on the strategy
+//
+//nolint:ireturn // Factory function intentionally returns interface
 func NewSelector(config *PoolConfig) ServerSelector {
 	switch config.SelectionStrategy {
 	case StrategyMasterFirst:

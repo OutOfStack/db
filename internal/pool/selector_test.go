@@ -72,7 +72,7 @@ func TestRoundRobinSelector(t *testing.T) {
 
 	// Track which servers we get
 	seen := make(map[string]int)
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		server := selector.Select()
 		if server == nil {
 			t.Fatal("Expected server, got nil")
@@ -101,7 +101,7 @@ func TestRandomSelector(t *testing.T) {
 	selector := NewRandomSelector(config)
 
 	// Select multiple times and ensure we get valid servers
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		server := selector.Select()
 		if server == nil {
 			t.Fatal("Expected server, got nil")
@@ -124,7 +124,7 @@ func TestRandomSelector(t *testing.T) {
 	selector.MarkFailed("server2")
 
 	// Should always return server3 now
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		server := selector.Select()
 		if server == nil {
 			t.Fatal("Expected server3, got nil")

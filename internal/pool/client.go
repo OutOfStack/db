@@ -1,6 +1,7 @@
 package pool
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -45,7 +46,7 @@ func (c *Client) Send(data []byte) ([]byte, error) {
 			c.selector.Reset()
 			server = c.selector.Select()
 			if server == nil {
-				return nil, fmt.Errorf("no servers available in pool")
+				return nil, errors.New("no servers available in pool")
 			}
 		}
 
@@ -120,7 +121,10 @@ func (c *Client) removeConnection(address string) {
 	defer c.mu.Unlock()
 
 	if conn, exists := c.connections[address]; exists {
-		conn.Close()
+		if err := conn.Close(); err != nil {
+			// Log the error but continue with cleanup
+			_ = err
+		}
 		delete(c.connections, address)
 	}
 }

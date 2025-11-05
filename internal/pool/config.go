@@ -60,26 +60,36 @@ func (p *PoolConfig) Validate() error {
 		return errors.New("pool enabled but no servers configured")
 	}
 
+	if err := p.validateServers(); err != nil {
+		return err
+	}
+
+	if err := p.validateStrategy(); err != nil {
+		return err
+	}
+
+	if err := p.validateRetrySettings(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateServers validates server configuration
+func (p *PoolConfig) validateServers() error {
 	masterCount := 0
 	for i, server := range p.Servers {
-		if server.Address == "" {
-			return errors.New("server address cannot be empty")
+		if err := validateServer(server); err != nil {
+			return err
 		}
-		if server.Role == "" {
-			return errors.New("server role cannot be empty")
-		}
-		if server.Role != RoleMaster && server.Role != RoleStandby {
-			return errors.New("server role must be 'master' or 'standby'")
-		}
+
 		if server.Role == RoleMaster {
 			masterCount++
 		}
 
 		// Check for duplicate addresses
-		for j := i + 1; j < len(p.Servers); j++ {
-			if server.Address == p.Servers[j].Address {
-				return errors.New("duplicate server address: " + server.Address)
-			}
+		if err := checkDuplicateAddress(server.Address, p.Servers[i+1:]); err != nil {
+			return err
 		}
 	}
 
@@ -87,12 +97,45 @@ func (p *PoolConfig) Validate() error {
 		return errors.New("at least one master server is required")
 	}
 
+	return nil
+}
+
+// validateServer validates a single server configuration
+func validateServer(server ServerConfig) error {
+	if server.Address == "" {
+		return errors.New("server address cannot be empty")
+	}
+	if server.Role == "" {
+		return errors.New("server role cannot be empty")
+	}
+	if server.Role != RoleMaster && server.Role != RoleStandby {
+		return errors.New("server role must be 'master' or 'standby'")
+	}
+	return nil
+}
+
+// checkDuplicateAddress checks if an address appears in the remaining servers
+func checkDuplicateAddress(address string, remaining []ServerConfig) error {
+	for _, server := range remaining {
+		if server.Address == address {
+			return errors.New("duplicate server address: " + address)
+		}
+	}
+	return nil
+}
+
+// validateStrategy validates the selection strategy
+func (p *PoolConfig) validateStrategy() error {
 	if p.SelectionStrategy != StrategyMasterFirst &&
 		p.SelectionStrategy != StrategyRoundRobin &&
 		p.SelectionStrategy != StrategyRandom {
 		return errors.New("invalid selection strategy")
 	}
+	return nil
+}
 
+// validateRetrySettings validates retry-related settings
+func (p *PoolConfig) validateRetrySettings() error {
 	if p.MaxRetries < 0 {
 		return errors.New("max_retries cannot be negative")
 	}

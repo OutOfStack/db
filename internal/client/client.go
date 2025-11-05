@@ -10,6 +10,8 @@ import (
 
 // New creates a new client based on the configuration
 // If pool is enabled, returns a pooled client; otherwise returns a single TCP client
+//
+//nolint:ireturn // Factory function intentionally returns interface
 func New(cfg *config.ClientConfig) (network.Client, error) {
 	if cfg.Pool.Enabled {
 		// Create pooled client
