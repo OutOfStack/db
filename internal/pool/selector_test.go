@@ -1,27 +1,29 @@
-package pool
+package pool_test
 
 import (
 	"testing"
+
+	"github.com/OutOfStack/db/internal/pool"
 )
 
 func TestMasterFirstSelector(t *testing.T) {
-	config := &PoolConfig{
-		Servers: []ServerConfig{
-			{Address: "master1", Role: RoleMaster},
-			{Address: "master2", Role: RoleMaster},
-			{Address: "standby1", Role: RoleStandby},
-			{Address: "standby2", Role: RoleStandby},
+	config := &pool.PoolConfig{
+		Servers: []pool.ServerConfig{
+			{Address: "master1", Role: pool.RoleMaster},
+			{Address: "master2", Role: pool.RoleMaster},
+			{Address: "standby1", Role: pool.RoleStandby},
+			{Address: "standby2", Role: pool.RoleStandby},
 		},
 	}
 
-	selector := NewMasterFirstSelector(config)
+	selector := pool.NewMasterFirstSelector(config)
 
 	// First select should return a master
 	server := selector.Select()
 	if server == nil {
 		t.Fatal("Expected server, got nil")
 	}
-	if server.Role != RoleMaster {
+	if server.Role != pool.RoleMaster {
 		t.Errorf("Expected master, got %s", server.Role)
 	}
 
@@ -34,7 +36,7 @@ func TestMasterFirstSelector(t *testing.T) {
 	if server == nil {
 		t.Fatal("Expected standby server, got nil")
 	}
-	if server.Role != RoleStandby {
+	if server.Role != pool.RoleStandby {
 		t.Errorf("Expected standby, got %s", server.Role)
 	}
 
@@ -54,21 +56,21 @@ func TestMasterFirstSelector(t *testing.T) {
 	if server == nil {
 		t.Fatal("Expected server after reset, got nil")
 	}
-	if server.Role != RoleMaster {
+	if server.Role != pool.RoleMaster {
 		t.Errorf("Expected master after reset, got %s", server.Role)
 	}
 }
 
 func TestRoundRobinSelector(t *testing.T) {
-	config := &PoolConfig{
-		Servers: []ServerConfig{
-			{Address: "server1", Role: RoleMaster},
-			{Address: "server2", Role: RoleStandby},
-			{Address: "server3", Role: RoleMaster},
+	config := &pool.PoolConfig{
+		Servers: []pool.ServerConfig{
+			{Address: "server1", Role: pool.RoleMaster},
+			{Address: "server2", Role: pool.RoleStandby},
+			{Address: "server3", Role: pool.RoleMaster},
 		},
 	}
 
-	selector := NewRoundRobinSelector(config)
+	selector := pool.NewRoundRobinSelector(config)
 
 	// Track which servers we get
 	seen := make(map[string]int)
@@ -90,15 +92,15 @@ func TestRoundRobinSelector(t *testing.T) {
 }
 
 func TestRandomSelector(t *testing.T) {
-	config := &PoolConfig{
-		Servers: []ServerConfig{
-			{Address: "server1", Role: RoleMaster},
-			{Address: "server2", Role: RoleStandby},
-			{Address: "server3", Role: RoleMaster},
+	config := &pool.PoolConfig{
+		Servers: []pool.ServerConfig{
+			{Address: "server1", Role: pool.RoleMaster},
+			{Address: "server2", Role: pool.RoleStandby},
+			{Address: "server3", Role: pool.RoleMaster},
 		},
 	}
 
-	selector := NewRandomSelector(config)
+	selector := pool.NewRandomSelector(config)
 
 	// Select multiple times and ensure we get valid servers
 	for range 10 {
@@ -138,22 +140,22 @@ func TestRandomSelector(t *testing.T) {
 func TestNewSelector(t *testing.T) {
 	tests := []struct {
 		name     string
-		strategy SelectionStrategy
+		strategy pool.SelectionStrategy
 		wantType string
 	}{
 		{
 			name:     "master first strategy",
-			strategy: StrategyMasterFirst,
+			strategy: pool.StrategyMasterFirst,
 			wantType: "*pool.MasterFirstSelector",
 		},
 		{
 			name:     "round robin strategy",
-			strategy: StrategyRoundRobin,
+			strategy: pool.StrategyRoundRobin,
 			wantType: "*pool.RoundRobinSelector",
 		},
 		{
 			name:     "random strategy",
-			strategy: StrategyRandom,
+			strategy: pool.StrategyRandom,
 			wantType: "*pool.RandomSelector",
 		},
 		{
@@ -165,14 +167,14 @@ func TestNewSelector(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			config := &PoolConfig{
-				Servers: []ServerConfig{
-					{Address: "server1", Role: RoleMaster},
+			config := &pool.PoolConfig{
+				Servers: []pool.ServerConfig{
+					{Address: "server1", Role: pool.RoleMaster},
 				},
 				SelectionStrategy: tt.strategy,
 			}
 
-			selector := NewSelector(config)
+			selector := pool.NewSelector(config)
 			if selector == nil {
 				t.Fatal("Expected selector, got nil")
 			}
@@ -180,15 +182,15 @@ func TestNewSelector(t *testing.T) {
 			// Type assertion to verify correct selector type
 			switch tt.wantType {
 			case "*pool.MasterFirstSelector":
-				if _, ok := selector.(*MasterFirstSelector); !ok {
+				if _, ok := selector.(*pool.MasterFirstSelector); !ok {
 					t.Errorf("Expected MasterFirstSelector, got %T", selector)
 				}
 			case "*pool.RoundRobinSelector":
-				if _, ok := selector.(*RoundRobinSelector); !ok {
+				if _, ok := selector.(*pool.RoundRobinSelector); !ok {
 					t.Errorf("Expected RoundRobinSelector, got %T", selector)
 				}
 			case "*pool.RandomSelector":
-				if _, ok := selector.(*RandomSelector); !ok {
+				if _, ok := selector.(*pool.RandomSelector); !ok {
 					t.Errorf("Expected RandomSelector, got %T", selector)
 				}
 			}

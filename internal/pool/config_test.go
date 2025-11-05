@@ -1,32 +1,34 @@
-package pool
+package pool_test
 
 import (
 	"testing"
 	"time"
+
+	"github.com/OutOfStack/db/internal/pool"
 )
 
 func TestPoolConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
-		config  *PoolConfig
+		config  *pool.PoolConfig
 		wantErr bool
 	}{
 		{
 			name: "disabled pool is valid",
-			config: &PoolConfig{
+			config: &pool.PoolConfig{
 				Enabled: false,
 			},
 			wantErr: false,
 		},
 		{
 			name: "valid pool with master and standby",
-			config: &PoolConfig{
+			config: &pool.PoolConfig{
 				Enabled: true,
-				Servers: []ServerConfig{
-					{Address: "127.0.0.1:3223", Role: RoleMaster},
-					{Address: "127.0.0.1:3224", Role: RoleStandby},
+				Servers: []pool.ServerConfig{
+					{Address: "127.0.0.1:3223", Role: pool.RoleMaster},
+					{Address: "127.0.0.1:3224", Role: pool.RoleStandby},
 				},
-				SelectionStrategy: StrategyMasterFirst,
+				SelectionStrategy: pool.StrategyMasterFirst,
 				MaxRetries:        3,
 				RetryDelay:        time.Second,
 			},
@@ -34,64 +36,64 @@ func TestPoolConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "enabled pool with no servers",
-			config: &PoolConfig{
+			config: &pool.PoolConfig{
 				Enabled:           true,
-				Servers:           []ServerConfig{},
-				SelectionStrategy: StrategyMasterFirst,
+				Servers:           []pool.ServerConfig{},
+				SelectionStrategy: pool.StrategyMasterFirst,
 			},
 			wantErr: true,
 		},
 		{
 			name: "pool with no master",
-			config: &PoolConfig{
+			config: &pool.PoolConfig{
 				Enabled: true,
-				Servers: []ServerConfig{
-					{Address: "127.0.0.1:3224", Role: RoleStandby},
+				Servers: []pool.ServerConfig{
+					{Address: "127.0.0.1:3224", Role: pool.RoleStandby},
 				},
-				SelectionStrategy: StrategyMasterFirst,
+				SelectionStrategy: pool.StrategyMasterFirst,
 			},
 			wantErr: true,
 		},
 		{
 			name: "pool with empty address",
-			config: &PoolConfig{
+			config: &pool.PoolConfig{
 				Enabled: true,
-				Servers: []ServerConfig{
-					{Address: "", Role: RoleMaster},
+				Servers: []pool.ServerConfig{
+					{Address: "", Role: pool.RoleMaster},
 				},
-				SelectionStrategy: StrategyMasterFirst,
+				SelectionStrategy: pool.StrategyMasterFirst,
 			},
 			wantErr: true,
 		},
 		{
 			name: "pool with duplicate addresses",
-			config: &PoolConfig{
+			config: &pool.PoolConfig{
 				Enabled: true,
-				Servers: []ServerConfig{
-					{Address: "127.0.0.1:3223", Role: RoleMaster},
-					{Address: "127.0.0.1:3223", Role: RoleStandby},
+				Servers: []pool.ServerConfig{
+					{Address: "127.0.0.1:3223", Role: pool.RoleMaster},
+					{Address: "127.0.0.1:3223", Role: pool.RoleStandby},
 				},
-				SelectionStrategy: StrategyMasterFirst,
+				SelectionStrategy: pool.StrategyMasterFirst,
 			},
 			wantErr: true,
 		},
 		{
 			name: "pool with invalid role",
-			config: &PoolConfig{
+			config: &pool.PoolConfig{
 				Enabled: true,
-				Servers: []ServerConfig{
+				Servers: []pool.ServerConfig{
 					{Address: "127.0.0.1:3223", Role: "invalid"},
 				},
-				SelectionStrategy: StrategyMasterFirst,
+				SelectionStrategy: pool.StrategyMasterFirst,
 			},
 			wantErr: true,
 		},
 		{
 			name: "pool with invalid strategy",
-			config: &PoolConfig{
+			config: &pool.PoolConfig{
 				Enabled: true,
-				Servers: []ServerConfig{
-					{Address: "127.0.0.1:3223", Role: RoleMaster},
+				Servers: []pool.ServerConfig{
+					{Address: "127.0.0.1:3223", Role: pool.RoleMaster},
 				},
 				SelectionStrategy: "invalid",
 			},
@@ -99,12 +101,12 @@ func TestPoolConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "pool with negative max retries",
-			config: &PoolConfig{
+			config: &pool.PoolConfig{
 				Enabled: true,
-				Servers: []ServerConfig{
-					{Address: "127.0.0.1:3223", Role: RoleMaster},
+				Servers: []pool.ServerConfig{
+					{Address: "127.0.0.1:3223", Role: pool.RoleMaster},
 				},
-				SelectionStrategy: StrategyMasterFirst,
+				SelectionStrategy: pool.StrategyMasterFirst,
 				MaxRetries:        -1,
 			},
 			wantErr: true,
@@ -122,11 +124,11 @@ func TestPoolConfig_Validate(t *testing.T) {
 }
 
 func TestPoolConfig_GetMasters(t *testing.T) {
-	config := &PoolConfig{
-		Servers: []ServerConfig{
-			{Address: "127.0.0.1:3223", Role: RoleMaster},
-			{Address: "127.0.0.1:3224", Role: RoleStandby},
-			{Address: "127.0.0.1:3225", Role: RoleMaster},
+	config := &pool.PoolConfig{
+		Servers: []pool.ServerConfig{
+			{Address: "127.0.0.1:3223", Role: pool.RoleMaster},
+			{Address: "127.0.0.1:3224", Role: pool.RoleStandby},
+			{Address: "127.0.0.1:3225", Role: pool.RoleMaster},
 		},
 	}
 
@@ -136,18 +138,18 @@ func TestPoolConfig_GetMasters(t *testing.T) {
 	}
 
 	for _, m := range masters {
-		if m.Role != RoleMaster {
+		if m.Role != pool.RoleMaster {
 			t.Errorf("Expected master role, got %s", m.Role)
 		}
 	}
 }
 
 func TestPoolConfig_GetStandbys(t *testing.T) {
-	config := &PoolConfig{
-		Servers: []ServerConfig{
-			{Address: "127.0.0.1:3223", Role: RoleMaster},
-			{Address: "127.0.0.1:3224", Role: RoleStandby},
-			{Address: "127.0.0.1:3225", Role: RoleStandby},
+	config := &pool.PoolConfig{
+		Servers: []pool.ServerConfig{
+			{Address: "127.0.0.1:3223", Role: pool.RoleMaster},
+			{Address: "127.0.0.1:3224", Role: pool.RoleStandby},
+			{Address: "127.0.0.1:3225", Role: pool.RoleStandby},
 		},
 	}
 
@@ -157,7 +159,7 @@ func TestPoolConfig_GetStandbys(t *testing.T) {
 	}
 
 	for _, s := range standbys {
-		if s.Role != RoleStandby {
+		if s.Role != pool.RoleStandby {
 			t.Errorf("Expected standby role, got %s", s.Role)
 		}
 	}
