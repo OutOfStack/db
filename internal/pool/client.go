@@ -9,12 +9,32 @@ import (
 	"github.com/OutOfStack/db/internal/network"
 )
 
+// syncedConnection wraps a TCPClient with a mutex to serialize Send() calls
+type syncedConnection struct {
+	mu     sync.Mutex
+	client *network.TCPClient
+}
+
+// Send serializes Send() calls to prevent concurrent access corruption
+func (sc *syncedConnection) Send(data []byte) ([]byte, error) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.client.Send(data)
+}
+
+// Close closes the underlying connection
+func (sc *syncedConnection) Close() error {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	return sc.client.Close()
+}
+
 // Client represents a pooled client that can connect to multiple servers
 type Client struct {
 	mu          sync.RWMutex
 	config      *PoolConfig
 	selector    ServerSelector
-	connections map[string]*network.TCPClient
+	connections map[string]*syncedConnection
 	options     []network.TCPClientOption
 }
 
@@ -27,7 +47,7 @@ func NewClient(config *PoolConfig, options ...network.TCPClientOption) (*Client,
 	return &Client{
 		config:      config,
 		selector:    NewSelector(config),
-		connections: make(map[string]*network.TCPClient),
+		connections: make(map[string]*syncedConnection),
 		options:     options,
 	}, nil
 }
@@ -87,7 +107,7 @@ func (c *Client) Send(data []byte) ([]byte, error) {
 }
 
 // getConnection gets or creates a connection to the specified address
-func (c *Client) getConnection(address string) (*network.TCPClient, error) {
+func (c *Client) getConnection(address string) (*syncedConnection, error) {
 	c.mu.RLock()
 	conn, exists := c.connections[address]
 	c.mu.RUnlock()
@@ -106,13 +126,18 @@ func (c *Client) getConnection(address string) (*network.TCPClient, error) {
 	}
 
 	// Create new TCP client
-	newConn, err := network.NewTCPClient(address, c.options...)
+	tcpClient, err := network.NewTCPClient(address, c.options...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create connection to %s: %w", address, err)
 	}
 
-	c.connections[address] = newConn
-	return newConn, nil
+	// Wrap with synchronized connection
+	syncedConn := &syncedConnection{
+		client: tcpClient,
+	}
+
+	c.connections[address] = syncedConn
+	return syncedConn, nil
 }
 
 // removeConnection removes a connection from the pool
@@ -141,7 +166,7 @@ func (c *Client) Close() error {
 		}
 	}
 
-	c.connections = make(map[string]*network.TCPClient)
+	c.connections = make(map[string]*syncedConnection)
 	return lastErr
 }
 

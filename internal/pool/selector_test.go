@@ -2,6 +2,7 @@ package pool_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/OutOfStack/db/internal/pool"
 )
@@ -14,6 +15,7 @@ func TestMasterFirstSelector(t *testing.T) {
 			{Address: "standby1", Role: pool.RoleStandby},
 			{Address: "standby2", Role: pool.RoleStandby},
 		},
+		FailureTimeout: time.Hour, // Long timeout for tests
 	}
 
 	selector := pool.NewMasterFirstSelector(config)
@@ -68,6 +70,7 @@ func TestRoundRobinSelector(t *testing.T) {
 			{Address: "server2", Role: pool.RoleStandby},
 			{Address: "server3", Role: pool.RoleMaster},
 		},
+		FailureTimeout: time.Hour, // Long timeout for tests
 	}
 
 	selector := pool.NewRoundRobinSelector(config)
@@ -98,6 +101,7 @@ func TestRandomSelector(t *testing.T) {
 			{Address: "server2", Role: pool.RoleStandby},
 			{Address: "server3", Role: pool.RoleMaster},
 		},
+		FailureTimeout: time.Hour, // Long timeout for tests
 	}
 
 	selector := pool.NewRandomSelector(config)
@@ -172,6 +176,7 @@ func TestNewSelector(t *testing.T) {
 					{Address: "server1", Role: pool.RoleMaster},
 				},
 				SelectionStrategy: tt.strategy,
+				FailureTimeout:    time.Hour, // Long timeout for tests
 			}
 
 			selector := pool.NewSelector(config)

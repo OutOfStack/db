@@ -34,3 +34,8 @@ pool:
 
   # Health check period (for future use)
   health_check_period: 10s
+
+  # Time after which failed servers are automatically retried
+  # Failed servers are temporarily excluded from the pool but will
+  # be retried after this timeout, allowing recovery from transient failures
+  failure_timeout: 30s
