@@ -1,0 +1,36 @@
+# Example client configuration with pool enabled
+network:
+  # This address is used when pool is disabled
+  address: "127.0.0.1:3223"
+  max_message_size: 4
+  idle_timeout: 1m
+
+pool:
+  # Enable connection pool with master/standby servers
+  enabled: true
+
+  # List of servers in the pool
+  servers:
+    - address: "127.0.0.1:3223"
+      role: master
+    - address: "127.0.0.1:3224"
+      role: master
+    - address: "127.0.0.1:3225"
+      role: standby
+    - address: "127.0.0.1:3226"
+      role: standby
+
+  # Selection strategy: master_first, round_robin, or random
+  # - master_first: Try master servers first, fall back to standby on failure
+  # - round_robin: Rotate through all servers in order
+  # - random: Pick servers randomly
+  selection_strategy: master_first
+
+  # Maximum number of retry attempts when a server fails
+  max_retries: 3
+
+  # Delay between retry attempts
+  retry_delay: 1s
+
+  # Health check period (for future use)
+  health_check_period: 10s
