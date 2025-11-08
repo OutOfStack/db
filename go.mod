@@ -1,12 +1,12 @@
 module github.com/OutOfStack/db
 
-go 1.24.0
+go 1.25
 
 tool go.uber.org/mock/gomock
 
 require (
-	github.com/stretchr/testify v1.10.0
-	go.uber.org/mock v0.5.2
+	github.com/stretchr/testify v1.11.1
+	go.uber.org/mock v0.6.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

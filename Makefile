@@ -15,7 +15,6 @@ build-cli:
 	mkdir -p bin
 	go build -o bin/$(APP)-cli cmd/db-cli/main.go
 
-
 run: build-db
 	go run ./cmd/db/.
 
