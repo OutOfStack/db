@@ -1,6 +1,7 @@
 package network
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -21,7 +22,10 @@ type TCPClient struct {
 
 // NewTCPClient creates a new TCP client connection
 func NewTCPClient(address string, options ...TCPClientOption) (*TCPClient, error) {
-	conn, err := net.Dial("tcp", address)
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+	}
+	conn, err := dialer.DialContext(context.Background(), "tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s: %w", address, err)
 	}
@@ -133,7 +137,10 @@ func (tc *TCPClient) reconnect() error {
 	}
 
 	// establish new connection
-	conn, err := net.Dial("tcp", tc.address)
+	dialer := &net.Dialer{
+		Timeout: 10 * time.Second,
+	}
+	conn, err := dialer.DialContext(context.Background(), "tcp", tc.address)
 	if err != nil {
 		return fmt.Errorf("failed to reconnect to %s: %w", tc.address, err)
 	}

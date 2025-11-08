@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/OutOfStack/db/internal/client"
 	"github.com/OutOfStack/db/internal/config"
-	"github.com/OutOfStack/db/internal/network"
 )
 
 func main() {
@@ -34,21 +34,22 @@ func main() {
 		cfg.Network.IdleTimeout = timeout
 	}
 
-	client, err := network.NewTCPClient(cfg.Network.Address,
-		network.WithClientIdleTimeout(cfg.Network.IdleTimeout),
-		network.WithClientBufferSize(cfg.Network.MaxMessageSizeKB*1024),
-	)
+	dbClient, err := client.New(cfg)
 	if err != nil {
-		fmt.Printf("Failed to connect to database server at %s: %v\n", cfg.Network.Address, err)
+		fmt.Printf("Failed to connect to database server: %v\n", err)
 		os.Exit(1)
 	}
 	defer func() {
-		if err = client.Close(); err != nil {
+		if err = dbClient.Close(); err != nil {
 			fmt.Printf("Failed to close connection: %v\n", err)
 		}
 	}()
 
-	fmt.Printf("Connected to database server at %s\n", cfg.Network.Address)
+	if cfg.Pool.Enabled {
+		fmt.Printf("Connected to database pool (%d servers)\n", len(cfg.Pool.Servers))
+	} else {
+		fmt.Printf("Connected to database server at %s\n", cfg.Network.Address)
+	}
 	fmt.Println("Available commands:")
 	fmt.Println("  SET key value")
 	fmt.Println("  GET key")
@@ -72,7 +73,7 @@ func main() {
 			continue
 		}
 
-		response, sErr := client.Send([]byte(input + "\n"))
+		response, sErr := dbClient.Send([]byte(input + "\n"))
 		if sErr != nil {
 			fmt.Printf("Failed to send command: %v\n", sErr)
 			break

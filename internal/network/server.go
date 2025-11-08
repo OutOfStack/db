@@ -37,7 +37,8 @@ func NewTCPServer(address string, logger *slog.Logger, options ...TCPServerOptio
 		logger = slog.Default()
 	}
 
-	listener, err := net.Listen("tcp", address)
+	lc := net.ListenConfig{}
+	listener, err := lc.Listen(context.Background(), "tcp", address)
 	if err != nil {
 		return nil, fmt.Errorf("failed to start server: %w", err)
 	}

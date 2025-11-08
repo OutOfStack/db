@@ -3,11 +3,14 @@ package config
 import (
 	"errors"
 	"time"
+
+	"github.com/OutOfStack/db/internal/pool"
 )
 
 // ClientConfig - configuration for the database client
 type ClientConfig struct {
 	Network ClientNetworkConfig `yaml:"network"`
+	Pool    pool.PoolConfig     `yaml:"pool"`
 }
 
 // ClientNetworkConfig - network-related configuration for the database client
@@ -27,13 +30,22 @@ func DefaultClientConfig() *ClientConfig {
 			MaxMessageSizeKB: 4,
 			IdleTimeout:      time.Minute,
 		},
+		Pool: *pool.DefaultPoolConfig(),
 	}
 }
 
 // Validate checks if the configuration values are valid
 func (c *ClientConfig) Validate() error {
-	if c.Network.Address == "" {
-		return errors.New("network address cannot be empty")
+	// If pool is enabled, validate pool config instead of single address
+	if c.Pool.Enabled {
+		if err := c.Pool.Validate(); err != nil {
+			return err
+		}
+	} else {
+		// Validate single server config
+		if c.Network.Address == "" {
+			return errors.New("network address cannot be empty")
+		}
 	}
 
 	if c.Network.MaxMessageSizeKB <= 0 {

@@ -18,6 +18,8 @@ The project consists of two main components:
 - Command-line interface for database operations
 - In-memory key-value storage engine
 - Connection limiting to prevent resource exhaustion
+- **Master/Standby Connection Pooling** with automatic failover
+- Configurable server selection strategies (master_first, round_robin, random)
 
 ## Commands
 
@@ -55,6 +57,8 @@ DEL user_name
 
 ## Configuration
 
+### Server Configuration
+
 The server can be configured using a YAML file. Example configuration:
 
 ```yaml
@@ -70,10 +74,10 @@ logging:
   output: "/log/output.log"
 ```
 
-### Configuration Options
+#### Server Configuration Options
 
 - **engine.type**: Storage engine type (currently only "in_memory")
-- **network.address**: Server listening address 
+- **network.address**: Server listening address
 - **network.max_connections**: Maximum concurrent client connections (enforced by server)
 - **network.max_message_size**: Maximum message size in KB
 - **network.idle_timeout**: Client idle timeout duration
@@ -102,7 +106,7 @@ make run
 
 The CLI client supports both configuration files and command-line flags for flexibility.
 
-### Client Configuration
+### Basic Client Configuration
 
 The client can be configured using a YAML file:
 
@@ -112,6 +116,45 @@ network:
   max_message_size: 4
   idle_timeout: 1m
 ```
+
+### Client with Connection Pool
+
+For distributed deployments with master/standby servers:
+
+```yaml
+network:
+  address: "127.0.0.1:3223"
+  max_message_size: 4
+  idle_timeout: 1m
+
+pool:
+  enabled: true
+
+  servers:
+    - address: "127.0.0.1:3223"
+      role: master
+    - address: "127.0.0.1:3224"
+      role: master
+    - address: "127.0.0.1:3225"
+      role: standby
+
+  selection_strategy: master_first
+  max_retries: 3
+  retry_delay: 1s
+  failure_timeout: 30s
+```
+
+#### Pool Configuration Options
+
+- **pool.enabled**: Enable connection pooling (default: false)
+- **pool.servers**: List of servers with address and role (master or standby)
+- **pool.selection_strategy**: How to select servers from the pool
+  - `master_first`: Try master servers first, fall back to standby on failure
+  - `round_robin`: Rotate through all servers in order
+  - `random`: Pick servers randomly
+- **pool.max_retries**: Maximum number of retry attempts when a server fails
+- **pool.retry_delay**: Delay between retry attempts
+- **pool.failure_timeout**: Time after which failed servers are automatically retried
 
 ### Usage Examples
 
@@ -191,23 +234,15 @@ go build -o bin/db-cli ./cmd/db-cli
 │       └── main.go
 ├── config.client.example.yaml   # Example client configuration
 ├── config.server.example.yaml   # Example server configuration
+├── example-pool-config.yaml     # Example pool configuration
 └── internal/                    # Internal packages
     ├── compute/                 # Request handling and command execution
-    │   └── compute.go
     ├── config/                  # Configuration management
-    │   ├── config.go           # Common configuration utilities
-    │   ├── client.go           # Client configuration
-    │   └── server.go           # Server configuration
     ├── engine/                  # Storage engine implementation
-    │   └── engine.go
     ├── network/                 # TCP networking layer
-    │   ├── client.go           # TCP client implementation
-    │   ├── server.go           # TCP server implementation
-    │   └── options.go          # Functional options
     ├── parser/                  # Command parsing
-    │   └── parser.go
+    ├── pool/                    # Connection pooling and failover
     └── storage/                 # Storage layer
-        └── storage.go
 ```
 
 ## Development
@@ -227,6 +262,11 @@ Clean build artifacts:
 make clean
 ```
 
+Generate mocks:
+```bash
+make generate
+```
+
 ## Network Protocol
 
 The server uses a simple text-based protocol over TCP:
@@ -238,7 +278,7 @@ The server uses a simple text-based protocol over TCP:
 ## Error Handling
 
 - Invalid commands return error messages
-- Missing arguments return error messages  
+- Missing arguments return error messages
 - Too many arguments return error messages
 - Unknown commands return error messages
 - Network errors are logged and handled gracefully
@@ -254,6 +294,17 @@ The server implements connection limiting to prevent resource exhaustion:
 - **Graceful Handling**: Existing connections continue to work normally
 - **Logging**: Connection rejections are logged with client address for monitoring
 - **Resource Cleanup**: Connection slots are automatically released when clients disconnect
+
+## Connection Pooling (Client-side)
+
+The client supports connection pooling for distributed deployments:
+
+- **Multiple Servers**: Configure multiple server addresses with master/standby roles
+- **Automatic Failover**: Failed servers are temporarily excluded and automatically retried after a timeout
+- **Selection Strategies**: Choose how servers are selected (master_first, round_robin, random)
+- **Connection Caching**: Established connections are reused to minimize overhead
+- **Concurrent Safety**: Serialized sends prevent TCP message corruption from concurrent requests
+- **Configurable Retries**: Control retry attempts and delays for transient failures
 
 ## Logging
 
