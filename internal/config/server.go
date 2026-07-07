@@ -45,7 +45,7 @@ func DefaultServerConfig() *ServerConfig {
 			Type: engine.TypeInMemory,
 		},
 		Network: ServerNetworkConfig{
-			Address:          "127.0.0.1:3223",
+			Address:          defaultAddress,
 			MaxConnections:   100,
 			MaxMessageSizeKB: 4,
 			IdleTimeout:      time.Minute,

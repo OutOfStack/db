@@ -8,6 +8,8 @@ import (
 )
 
 func TestMasterFirstSelector(t *testing.T) {
+	t.Parallel()
+
 	config := &pool.PoolConfig{
 		Servers: []pool.ServerConfig{
 			{Address: "master1", Role: pool.RoleMaster},
@@ -64,6 +66,8 @@ func TestMasterFirstSelector(t *testing.T) {
 }
 
 func TestRoundRobinSelector(t *testing.T) {
+	t.Parallel()
+
 	config := &pool.PoolConfig{
 		Servers: []pool.ServerConfig{
 			{Address: "server1", Role: pool.RoleMaster},
@@ -95,6 +99,8 @@ func TestRoundRobinSelector(t *testing.T) {
 }
 
 func TestRandomSelector(t *testing.T) {
+	t.Parallel()
+
 	config := &pool.PoolConfig{
 		Servers: []pool.ServerConfig{
 			{Address: "server1", Role: pool.RoleMaster},
@@ -142,6 +148,8 @@ func TestRandomSelector(t *testing.T) {
 }
 
 func TestNewSelector(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name     string
 		strategy pool.SelectionStrategy
@@ -171,6 +179,8 @@ func TestNewSelector(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			config := &pool.PoolConfig{
 				Servers: []pool.ServerConfig{
 					{Address: "server1", Role: pool.RoleMaster},

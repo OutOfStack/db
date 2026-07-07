@@ -51,9 +51,9 @@ func main() {
 		fmt.Printf("Connected to database server at %s\n", cfg.Network.Address)
 	}
 	fmt.Println("Available commands:")
-	fmt.Println("  SET key value")
-	fmt.Println("  GET key")
-	fmt.Println("  DEL key")
+	fmt.Println("  SET table key value")
+	fmt.Println("  GET table key")
+	fmt.Println("  DEL table key")
 	fmt.Println("Type 'exit' to quit")
 	fmt.Println()
 

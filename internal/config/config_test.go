@@ -12,13 +12,19 @@ import (
 )
 
 func TestLoadServerConfig(t *testing.T) {
+	t.Parallel()
+
 	t.Run("loads default config if file not found", func(t *testing.T) {
+		t.Parallel()
+
 		cfg, err := config.LoadServerConfig("non-existent-config.yaml")
 		require.NoError(t, err)
 		assert.Equal(t, config.DefaultServerConfig(), cfg)
 	})
 
 	t.Run("loads config from file", func(t *testing.T) {
+		t.Parallel()
+
 		configContent := `
 engine:
   type: "in_memory"
@@ -53,6 +59,8 @@ logging:
 	})
 
 	t.Run("returns error for invalid config values", func(t *testing.T) {
+		t.Parallel()
+
 		configContent := `
 engine:
   type: "in_memory"
@@ -76,13 +84,19 @@ network:
 }
 
 func TestLoadClientConfig(t *testing.T) {
+	t.Parallel()
+
 	t.Run("loads default config if file not found", func(t *testing.T) {
+		t.Parallel()
+
 		cfg, err := config.LoadClientConfig("non-existent-config.yaml")
 		require.NoError(t, err)
 		assert.Equal(t, config.DefaultClientConfig(), cfg)
 	})
 
 	t.Run("loads config from file", func(t *testing.T) {
+		t.Parallel()
+
 		configContent := `
 network:
   address: "192.168.1.1:1234"
@@ -107,6 +121,8 @@ network:
 	})
 
 	t.Run("returns error for invalid config values", func(t *testing.T) {
+		t.Parallel()
+
 		configContent := `
 network:
   address: "localhost:1234"

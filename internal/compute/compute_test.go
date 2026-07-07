@@ -9,10 +9,12 @@ import (
 	"github.com/OutOfStack/db/internal/compute"
 	mocks "github.com/OutOfStack/db/internal/compute/mocks"
 	"github.com/stretchr/testify/require"
-	gomock "go.uber.org/mock/gomock"
+	"go.uber.org/mock/gomock"
 )
 
 func TestHandleRequest_Success(t *testing.T) {
+	t.Parallel()
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -39,6 +41,8 @@ func TestHandleRequest_Success(t *testing.T) {
 }
 
 func TestHandleRequest_ParserError(t *testing.T) {
+	t.Parallel()
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
@@ -63,6 +67,8 @@ func TestHandleRequest_ParserError(t *testing.T) {
 }
 
 func TestHandleRequest_StorageError(t *testing.T) {
+	t.Parallel()
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 

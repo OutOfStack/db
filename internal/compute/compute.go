@@ -43,7 +43,7 @@ func (c *Compute) HandleRequest(ctx context.Context, input string) (string, erro
 	result, err := c.storage.Execute(ctx, cmd, args)
 	if err != nil {
 		if errors.Is(err, storage.ErrNotFound) {
-			c.logger.Info("Key not found", "key", args[0])
+			c.logger.Info("Key not found", "args", args)
 		} else {
 			c.logger.Error("Storage execution error", "error", err)
 		}

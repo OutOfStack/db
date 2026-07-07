@@ -26,7 +26,7 @@ type ClientNetworkConfig struct {
 func DefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
 		Network: ClientNetworkConfig{
-			Address:          "127.0.0.1:3223",
+			Address:          defaultAddress,
 			MaxMessageSizeKB: 4,
 			IdleTimeout:      time.Minute,
 		},
