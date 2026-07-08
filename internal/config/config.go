@@ -9,6 +9,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// defaultAddress is the default server address shared by server and client configs
+const defaultAddress = "127.0.0.1:3223"
+
 // getAllowedConfigDirs returns the list of directories to search for config files.
 // It checks current directory, user config directory, and user home directory
 func getAllowedConfigDirs() []string {

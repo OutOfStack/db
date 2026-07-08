@@ -1,23 +1,30 @@
 package parser_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/OutOfStack/db/internal/parser"
 )
 
 func TestParse(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		input    string
 		wantCmd  string
 		wantArgs []string
 		wantErr  bool
 	}{
-		{"SET foo bar", "SET", []string{"foo", "bar"}, false},
-		{"GET foo", "GET", []string{"foo"}, false},
-		{"DEL foo", "DEL", []string{"foo"}, false},
-		{"SET foo", "", nil, true},
+		{"SET users foo bar", "SET", []string{"users", "foo", "bar"}, false},
+		{"GET users foo", "GET", []string{"users", "foo"}, false},
+		{"DEL users foo", "DEL", []string{"users", "foo"}, false},
+		{"SET users foo", "", nil, true},
+		{"SET foo bar", "", nil, true},
+		{"GET foo", "", nil, true},
+		{"DEL foo", "", nil, true},
 		{"GET", "", nil, true},
+		{"SET " + strings.Repeat("t", 129) + " foo bar", "", nil, true},
 		{"UNKNOWN foo", "", nil, true},
 		{"", "", nil, true},
 	}

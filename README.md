@@ -17,42 +17,45 @@ The project consists of two main components:
 - Graceful shutdown with proper resource cleanup
 - Command-line interface for database operations
 - In-memory key-value storage engine
+- Tables: keys are scoped per table, created implicitly on first write
 - Connection limiting to prevent resource exhaustion
 - **Master/Standby Connection Pooling** with automatic failover
 - Configurable server selection strategies (master_first, round_robin, random)
 
 ## Commands
 
-All commands use a simple text-based protocol:
+All commands use a simple text-based protocol. Every key belongs to a table:
+tables are created implicitly on the first `SET` and removed automatically when
+their last key is deleted.
 
 ### SET
-Set a key-value pair:
+Set a key-value pair in a table:
 ```
-SET <key> <value>
+SET <table> <key> <value>
 ```
 Example:
 ```
-SET user_name John
+SET users name John
 ```
 
 ### GET
-Get value by key:
+Get value by key from a table:
 ```
-GET <key>
+GET <table> <key>
 ```
 Example:
 ```
-GET user_name
+GET users name
 ```
 
 ### DEL
-Delete key:
+Delete key from a table:
 ```
-DEL <key>
+DEL <table> <key>
 ```
 Example:
 ```
-DEL user_name
+DEL users name
 ```
 
 ## Configuration
@@ -197,16 +200,16 @@ make run-cli
 $ ./bin/db-cli
 Connected to database server at localhost:3223
 Available commands:
-  SET key value
-  GET key
-  DEL key
+  SET table key value
+  GET table key
+  DEL table key
 Type 'exit' to quit
 
-> SET name Alice
+> SET users name Alice
 OK
-> GET name
+> GET users name
 Alice
-> DEL name
+> DEL users name
 OK
 > exit
 ```

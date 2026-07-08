@@ -41,44 +41,44 @@ func (m *MockEngine) EXPECT() *MockEngineMockRecorder {
 }
 
 // Del mocks base method.
-func (m *MockEngine) Del(ctx context.Context, key string) error {
+func (m *MockEngine) Del(ctx context.Context, table, key string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Del", ctx, key)
+	ret := m.ctrl.Call(m, "Del", ctx, table, key)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Del indicates an expected call of Del.
-func (mr *MockEngineMockRecorder) Del(ctx, key any) *gomock.Call {
+func (mr *MockEngineMockRecorder) Del(ctx, table, key any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Del", reflect.TypeOf((*MockEngine)(nil).Del), ctx, key)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Del", reflect.TypeOf((*MockEngine)(nil).Del), ctx, table, key)
 }
 
 // Get mocks base method.
-func (m *MockEngine) Get(ctx context.Context, key string) (string, error) {
+func (m *MockEngine) Get(ctx context.Context, table, key string) (string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Get", ctx, key)
+	ret := m.ctrl.Call(m, "Get", ctx, table, key)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // Get indicates an expected call of Get.
-func (mr *MockEngineMockRecorder) Get(ctx, key any) *gomock.Call {
+func (mr *MockEngineMockRecorder) Get(ctx, table, key any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockEngine)(nil).Get), ctx, key)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockEngine)(nil).Get), ctx, table, key)
 }
 
 // Set mocks base method.
-func (m *MockEngine) Set(ctx context.Context, key, value string) error {
+func (m *MockEngine) Set(ctx context.Context, table, key, value string) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Set", ctx, key, value)
+	ret := m.ctrl.Call(m, "Set", ctx, table, key, value)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Set indicates an expected call of Set.
-func (mr *MockEngineMockRecorder) Set(ctx, key, value any) *gomock.Call {
+func (mr *MockEngineMockRecorder) Set(ctx, table, key, value any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Set", reflect.TypeOf((*MockEngine)(nil).Set), ctx, key, value)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Set", reflect.TypeOf((*MockEngine)(nil).Set), ctx, table, key, value)
 }
