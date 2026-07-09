@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/OutOfStack/db/client"
 	"github.com/OutOfStack/db/internal/compute"
@@ -17,6 +19,16 @@ import (
 // startServer starts an in-process database server on an ephemeral port
 // and returns its address
 func startServer(t *testing.T) string {
+	t.Helper()
+
+	addr, _ := startStoppableServer(t)
+	return addr
+}
+
+// startStoppableServer starts an in-process database server on an ephemeral
+// port and returns its address and a stop function. The stop function blocks
+// until the server no longer accepts new connections
+func startStoppableServer(t *testing.T) (addr string, stop func()) {
 	t.Helper()
 
 	logger := slog.New(slog.DiscardHandler)
@@ -39,7 +51,24 @@ func startServer(t *testing.T) string {
 		return []byte(res)
 	})
 
-	return srv.Addr().String()
+	addr = srv.Addr().String()
+
+	stop = func() {
+		cancel()
+		// wait until the listener is actually closed so new dials fail deterministically
+		dialer := &net.Dialer{}
+		for range 100 {
+			conn, dErr := dialer.DialContext(context.Background(), "tcp", addr)
+			if dErr != nil {
+				return
+			}
+			_ = conn.Close()
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("server at %s did not stop accepting connections", addr)
+	}
+
+	return addr, stop
 }
 
 func TestClient_RoundTrip(t *testing.T) {
@@ -139,5 +168,54 @@ func TestClient_Pool_RoundTrip(t *testing.T) {
 	got, err := c.Get(ctx, "users", "name")
 	if err != nil || got != "vlad" {
 		t.Errorf("Get() = %q, %v; want %q, nil", got, err, "vlad")
+	}
+}
+
+func TestClient_Pool_Failover(t *testing.T) {
+	t.Parallel()
+
+	masterAddr, stopMaster := startStoppableServer(t)
+	standbyAddr, _ := startStoppableServer(t)
+
+	c, err := client.New(
+		client.WithServers(
+			client.Server{Address: masterAddr, Role: client.RoleMaster},
+			client.Server{Address: standbyAddr, Role: client.RoleStandby},
+		),
+		client.WithStrategy(client.MasterFirst),
+		client.WithRetries(3, 10*time.Millisecond),
+	)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer c.Close()
+
+	ctx := t.Context()
+
+	// master serves while alive
+	if err = c.Set(ctx, "t", "key", "master-value"); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+	got, err := c.Get(ctx, "t", "key")
+	if err != nil || got != "master-value" {
+		t.Fatalf("Get() = %q, %v; want %q, nil", got, err, "master-value")
+	}
+
+	stopMaster()
+
+	// after master death every operation must keep succeeding via the standby.
+	// The master's established connection may absorb at most one more request
+	// before it closes, so send two before asserting state
+	if err = c.Set(ctx, "t", "key", "standby-value"); err != nil {
+		t.Fatalf("Set() after master stop error = %v", err)
+	}
+	if err = c.Set(ctx, "t", "key", "standby-value"); err != nil {
+		t.Fatalf("second Set() after master stop error = %v", err)
+	}
+
+	// servers do not replicate, so getting the new value proves the standby serves now
+	got, err = c.Get(ctx, "t", "key")
+	if err != nil || got != "standby-value" {
+		t.Errorf("Get() after failover = %q, %v; want %q, nil", got, err, "standby-value")
 	}
 }

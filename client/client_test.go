@@ -3,6 +3,7 @@ package client_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/OutOfStack/db/client"
@@ -157,6 +158,16 @@ func TestClient_Raw(t *testing.T) {
 	if _, err = c.Raw(t.Context(), "   "); err == nil {
 		t.Error("Raw() with empty command should fail")
 	}
+	if _, err = c.Raw(t.Context(), "SET t k v\nDEL t k"); err == nil {
+		t.Error("Raw() with embedded newline should fail")
+	}
+	// trailing newlines are trimmed, only embedded ones are rejected
+	if _, err = c.Raw(t.Context(), "GET t\rk"); err == nil {
+		t.Error("Raw() with embedded carriage return should fail")
+	}
+	if len(ft.sent) != 1 {
+		t.Errorf("rejected commands must not reach the transport, sent: %q", ft.sent)
+	}
 }
 
 func TestClient_ArgValidation(t *testing.T) {
@@ -174,6 +185,8 @@ func TestClient_ArgValidation(t *testing.T) {
 		{"key with space", func() error { return c.Del(t.Context(), "t", "a b") }},
 		{"value with space", func() error { return c.Set(t.Context(), "t", "k", "a b") }},
 		{"value with tab", func() error { return c.Set(t.Context(), "t", "k", "a\tb") }},
+		{"value with newline", func() error { return c.Set(t.Context(), "t", "k", "a\nb") }},
+		{"table too long", func() error { return c.Set(t.Context(), strings.Repeat("t", 129), "k", "v") }},
 	}
 
 	for _, tt := range tests {

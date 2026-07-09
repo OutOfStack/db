@@ -23,6 +23,10 @@ import (
 const (
 	respOK       = "OK"
 	respNotFound = "not found"
+
+	// maxTableNameLen mirrors the server-side parser limit so invalid
+	// table names are rejected before reaching the wire
+	maxTableNameLen = 128
 )
 
 // transport is the minimal connection interface the client needs.
@@ -95,7 +99,13 @@ func (c *Client) Set(ctx context.Context, table, key, value string) error {
 }
 
 // Get returns the value stored under key in table.
-// Returns ErrNotFound if the key does not exist
+// Returns ErrNotFound if the key does not exist.
+//
+// Limitation: the current text protocol does not mark error responses, so a
+// stored value literally equal to "not found" is indistinguishable from a
+// missing key. Client-side validation rules out all other known server
+// errors for well-formed calls; a future protocol revision with framed
+// responses will remove the ambiguity entirely
 func (c *Client) Get(ctx context.Context, table, key string) (string, error) {
 	if err := validateArgs(table, key); err != nil {
 		return "", err
@@ -136,8 +146,14 @@ func (c *Client) Del(ctx context.Context, table, key string) error {
 // as is, without error mapping. It gives access to commands that have no
 // typed wrapper yet
 func (c *Client) Raw(ctx context.Context, command string) (string, error) {
-	if strings.TrimSpace(command) == "" {
+	command = strings.TrimSpace(command)
+	if command == "" {
 		return "", errors.New("empty command")
+	}
+	// the protocol is line-oriented: embedded newlines would smuggle extra
+	// commands into the payload and desynchronize the connection
+	if strings.ContainsAny(command, "\r\n") {
+		return "", errors.New("command cannot contain newline characters")
 	}
 	return c.send(ctx, command)
 }
@@ -162,10 +178,13 @@ func (c *Client) send(ctx context.Context, command string) (string, error) {
 	return strings.TrimSpace(string(resp)), nil
 }
 
-// validateArgs checks that command arguments can be carried by the
-// whitespace-delimited text protocol
-func validateArgs(args ...string) error {
-	for _, arg := range args {
+// validateArgs checks that the table name and remaining arguments can be
+// carried by the whitespace-delimited text protocol
+func validateArgs(table string, args ...string) error {
+	if len(table) > maxTableNameLen {
+		return fmt.Errorf("table name exceeds %d characters", maxTableNameLen)
+	}
+	for _, arg := range append([]string{table}, args...) {
 		if arg == "" {
 			return errors.New("argument cannot be empty")
 		}
