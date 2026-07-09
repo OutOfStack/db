@@ -4,9 +4,10 @@ A distributed key-value database with TCP server and CLI client written in Go.
 
 ## Architecture
 
-The project consists of two main components:
+The project consists of three main components:
 - **Database Server** (`cmd/db`): TCP server that handles database operations
 - **CLI Client** (`cmd/db-cli`): Command-line client for interacting with the server
+- **Go Client Library** (`client`): Public package for using the database from Go programs
 
 ## Features
 
@@ -214,6 +215,43 @@ OK
 > exit
 ```
 
+## Go Client Library
+
+External Go programs can use the database through the public client package —
+the only supported import path for external consumers:
+
+```go
+import "github.com/OutOfStack/db/client"
+
+c, err := client.New(client.WithAddress("127.0.0.1:3223"))
+if err != nil {
+    return err
+}
+defer c.Close()
+
+err = c.Set(ctx, "users", "name", "Alice")
+val, err := c.Get(ctx, "users", "name") // returns client.ErrNotFound if the key is missing
+err = c.Del(ctx, "users", "name")
+```
+
+For distributed deployments, configure a connection pool instead of a single address:
+
+```go
+c, err := client.New(
+    client.WithServers(
+        client.Server{Address: "127.0.0.1:3223", Role: client.RoleMaster},
+        client.Server{Address: "127.0.0.1:3224", Role: client.RoleStandby},
+    ),
+    client.WithStrategy(client.MasterFirst),
+    client.WithRetries(3, time.Second),
+)
+```
+
+Error handling:
+- `client.ErrNotFound` — sentinel returned by `Get`/`Del` for missing keys (check with `errors.Is`)
+- `*client.ServerError` — any other error message returned by the server (check with `errors.As`)
+- `Raw(ctx, command)` — escape hatch that sends a raw command line and returns the response text as is
+
 ## Building
 
 Build both server and client:
@@ -230,7 +268,8 @@ go build -o bin/db-cli ./cmd/db-cli
 ## Project Structure
 
 ```
-├── cmd/                          # Command-line applications
+├── client/                      # Public Go client library
+├── cmd/                         # Command-line applications
 │   ├── db/                      # Database server
 │   │   └── main.go
 │   └── db-cli/                  # CLI client

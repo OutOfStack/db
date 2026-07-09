@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -9,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OutOfStack/db/internal/client"
+	"github.com/OutOfStack/db/client"
 	"github.com/OutOfStack/db/internal/config"
 )
 
@@ -34,7 +35,7 @@ func main() {
 		cfg.Network.IdleTimeout = timeout
 	}
 
-	dbClient, err := client.New(cfg)
+	dbClient, err := client.New(clientOptions(cfg)...)
 	if err != nil {
 		fmt.Printf("Failed to connect to database server: %v\n", err)
 		os.Exit(1)
@@ -57,6 +58,7 @@ func main() {
 	fmt.Println("Type 'exit' to quit")
 	fmt.Println()
 
+	ctx := context.Background()
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
 		fmt.Print("> ")
@@ -73,15 +75,41 @@ func main() {
 			continue
 		}
 
-		response, sErr := dbClient.Send([]byte(input + "\n"))
+		response, sErr := dbClient.Raw(ctx, input)
 		if sErr != nil {
 			fmt.Printf("Failed to send command: %v\n", sErr)
 			break
 		}
-		fmt.Printf("%s\n", strings.TrimSpace(string(response)))
+		fmt.Println(response)
 	}
 
 	if err = scanner.Err(); err != nil {
 		fmt.Printf("Input error: %v\n", err)
 	}
+}
+
+// clientOptions maps the loaded CLI configuration to client options
+func clientOptions(cfg *config.ClientConfig) []client.Option {
+	opts := []client.Option{
+		client.WithIdleTimeout(cfg.Network.IdleTimeout),
+		client.WithMaxMessageSize(cfg.Network.MaxMessageSizeKB),
+	}
+
+	if !cfg.Pool.Enabled {
+		return append(opts, client.WithAddress(cfg.Network.Address))
+	}
+
+	servers := make([]client.Server, 0, len(cfg.Pool.Servers))
+	for _, s := range cfg.Pool.Servers {
+		servers = append(servers, client.Server{
+			Address: s.Address,
+			Role:    client.Role(s.Role),
+		})
+	}
+	return append(opts,
+		client.WithServers(servers...),
+		client.WithStrategy(client.Strategy(cfg.Pool.SelectionStrategy)),
+		client.WithRetries(cfg.Pool.MaxRetries, cfg.Pool.RetryDelay),
+		client.WithFailureTimeout(cfg.Pool.FailureTimeout),
+	)
 }

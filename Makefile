@@ -1,25 +1,22 @@
 APP=db
 
-.PHONY: build build-db build-cli run test lint clean
+.PHONY: build build-db build-cli run run-cli test lint clean generate
 
-build:
-	mkdir -p bin
-	go build -o bin/$(APP) cmd/db/main.go
-	go build -o bin/$(APP)-cli cmd/db-cli/main.go
+build: build-db build-cli
 
 build-db:
 	mkdir -p bin
-	go build -o bin/$(APP) cmd/db/main.go
+	go build -o bin/$(APP) ./cmd/db
 
 build-cli:
 	mkdir -p bin
-	go build -o bin/$(APP)-cli cmd/db-cli/main.go
+	go build -o bin/$(APP)-cli ./cmd/db-cli
 
-run: build-db
-	go run ./cmd/db/.
+run:
+	go run ./cmd/db
 
-run-cli: build-cli
-	go run ./cmd/db-cli/.
+run-cli:
+	go run ./cmd/db-cli
 
 test:
 	go test -v -race ./...

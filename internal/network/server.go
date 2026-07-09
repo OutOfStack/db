@@ -58,6 +58,11 @@ func NewTCPServer(address string, logger *slog.Logger, options ...TCPServerOptio
 	return server, nil
 }
 
+// Addr returns the address the server is listening on
+func (s *TCPServer) Addr() net.Addr {
+	return s.listener.Addr()
+}
+
 // Start begins accepting connections
 func (s *TCPServer) Start(ctx context.Context, handler RequestHandler) {
 	s.wg.Add(1)
