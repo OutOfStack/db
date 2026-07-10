@@ -88,6 +88,18 @@ logging:
 - **logging.level**: Log level (debug, info, warn, error)
 - **logging.output**: Log output file path (empty for stdout)
 
+#### Environment Variable Overrides
+
+Server settings can be overridden with environment variables, which take the highest priority
+(environment > config file > defaults):
+
+- `DB_ADDRESS` — listening address
+- `DB_MAX_CONNECTIONS` — maximum concurrent client connections
+- `DB_MAX_MESSAGE_SIZE` — maximum message size in KB
+- `DB_IDLE_TIMEOUT` — client idle timeout (Go duration, e.g. `5m`)
+- `DB_LOG_LEVEL` — log level
+- `DB_LOG_OUTPUT` — log output file path
+
 ## Running the Server
 
 ### With default configuration:
@@ -104,6 +116,22 @@ make build
 ### Using make:
 ```bash
 make run
+```
+
+### With Docker:
+```bash
+make docker-run
+# or
+docker build -t db .
+docker run --rm -p 3223:3223 db
+```
+
+The image runs on default configuration with `DB_ADDRESS=0.0.0.0:3223` set, so the server is
+reachable through the published port, and logs to stdout for `docker logs`. Configure it with
+environment variables:
+
+```bash
+docker run --rm -p 3223:3223 -e DB_LOG_LEVEL=debug -e DB_MAX_CONNECTIONS=500 db
 ```
 
 ## Using the CLI Client

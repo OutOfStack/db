@@ -83,6 +83,73 @@ network:
 	})
 }
 
+func TestLoadServerConfig_EnvOverrides(t *testing.T) { //nolint:paralleltest // t.Setenv
+	t.Run("env overrides defaults", func(t *testing.T) {
+		t.Setenv("DB_ADDRESS", "0.0.0.0:9999")
+		t.Setenv("DB_MAX_CONNECTIONS", "7")
+		t.Setenv("DB_MAX_MESSAGE_SIZE", "16")
+		t.Setenv("DB_IDLE_TIMEOUT", "30s")
+		t.Setenv("DB_LOG_LEVEL", "debug")
+		t.Setenv("DB_LOG_OUTPUT", "/tmp/db.log")
+
+		cfg, err := config.LoadServerConfig("")
+		require.NoError(t, err)
+
+		assert.Equal(t, "0.0.0.0:9999", cfg.Network.Address)
+		assert.Equal(t, 7, cfg.Network.MaxConnections)
+		assert.Equal(t, 16, cfg.Network.MaxMessageSizeKB)
+		assert.Equal(t, 30*time.Second, cfg.Network.IdleTimeout)
+		assert.Equal(t, "debug", cfg.Logging.Level)
+		assert.Equal(t, "/tmp/db.log", cfg.Logging.Output)
+	})
+
+	t.Run("env overrides file values", func(t *testing.T) {
+		configContent := `
+engine:
+  type: "in_memory"
+network:
+  address: "127.0.0.1:8080"
+  max_connections: 50
+  max_message_size: 8
+  idle_timeout: 10m
+logging:
+  level: "info"
+`
+		tmpFile, err := os.CreateTemp(".", "config_test_*.yaml")
+		require.NoError(t, err)
+		defer os.Remove(tmpFile.Name())
+
+		_, err = tmpFile.WriteString(configContent)
+		require.NoError(t, err)
+		require.NoError(t, tmpFile.Close())
+
+		t.Setenv("DB_ADDRESS", "0.0.0.0:9999")
+
+		cfg, err := config.LoadServerConfig(filepath.Base(tmpFile.Name()))
+		require.NoError(t, err)
+
+		assert.Equal(t, "0.0.0.0:9999", cfg.Network.Address)
+		// file values not overridden by env stay intact
+		assert.Equal(t, 50, cfg.Network.MaxConnections)
+	})
+
+	t.Run("returns error for invalid env value", func(t *testing.T) {
+		t.Setenv("DB_MAX_CONNECTIONS", "not-a-number")
+
+		_, err := config.LoadServerConfig("")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "DB_MAX_CONNECTIONS")
+	})
+
+	t.Run("returns error when env value fails validation", func(t *testing.T) {
+		t.Setenv("DB_IDLE_TIMEOUT", "-5m")
+
+		_, err := config.LoadServerConfig("")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "idleTimeout must be positive")
+	})
+}
+
 func TestLoadClientConfig(t *testing.T) {
 	t.Parallel()
 

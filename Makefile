@@ -1,6 +1,6 @@
 APP=db
 
-.PHONY: build build-db build-cli run run-cli test lint clean generate
+.PHONY: build build-db build-cli run run-cli test lint clean generate docker-build docker-run
 
 build: build-db build-cli
 
@@ -26,6 +26,12 @@ lint:
 
 clean:
 	rm -rf bin
+
+docker-build:
+	docker build -t db .
+
+docker-run: docker-build
+	docker run --rm -p 3223:3223 db
 
 generate:
 	go tool mockgen -source=internal/compute/compute.go -destination=internal/compute/mocks/compute.go -package=compute_mocks

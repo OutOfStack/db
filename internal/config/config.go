@@ -54,31 +54,35 @@ func load(filename string) (data []byte, err error) {
 	return nil, nil
 }
 
-// LoadServerConfig loads the server configuration from a YAML file.
+// LoadServerConfig loads the server configuration from a YAML file and
+// applies DB_* environment variable overrides.
+// Priority: environment variables > file values > defaults
 func LoadServerConfig(filename string) (*ServerConfig, error) {
-	if filename == "" {
-		return DefaultServerConfig(), nil
+	cfg := DefaultServerConfig()
+
+	if filename != "" {
+		data, err := load(filename)
+		if err != nil {
+			return nil, err
+		}
+		if data != nil {
+			var fileCfg ServerConfig
+			if err = yaml.Unmarshal(data, &fileCfg); err != nil {
+				return nil, fmt.Errorf("failed to parse config file: %w", err)
+			}
+			cfg = &fileCfg
+		}
 	}
 
-	data, err := load(filename)
-	if err != nil {
+	if err := cfg.applyEnvOverrides(); err != nil {
 		return nil, err
 	}
 
-	if data == nil {
-		return DefaultServerConfig(), nil
-	}
-
-	var cfg ServerConfig
-	if err = yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("failed to parse config file: %w", err)
-	}
-
-	if err = cfg.Validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	return &cfg, nil
+	return cfg, nil
 }
 
 // LoadClientConfig loads the client configuration from a YAML file.
