@@ -4,9 +4,10 @@ A distributed key-value database with TCP server and CLI client written in Go.
 
 ## Architecture
 
-The project consists of two main components:
+The project consists of three main components:
 - **Database Server** (`cmd/db`): TCP server that handles database operations
 - **CLI Client** (`cmd/db-cli`): Command-line client for interacting with the server
+- **Go Client Library** (`client`): Public package for using the database from Go programs
 
 ## Features
 
@@ -87,6 +88,18 @@ logging:
 - **logging.level**: Log level (debug, info, warn, error)
 - **logging.output**: Log output file path (empty for stdout)
 
+#### Environment Variable Overrides
+
+Server settings can be overridden with environment variables, which take the highest priority
+(environment > config file > defaults):
+
+- `DB_ADDRESS` — listening address
+- `DB_MAX_CONNECTIONS` — maximum concurrent client connections
+- `DB_MAX_MESSAGE_SIZE` — maximum message size in KB
+- `DB_IDLE_TIMEOUT` — client idle timeout (Go duration, e.g. `5m`)
+- `DB_LOG_LEVEL` — log level
+- `DB_LOG_OUTPUT` — log output file path
+
 ## Running the Server
 
 ### With default configuration:
@@ -103,6 +116,22 @@ make build
 ### Using make:
 ```bash
 make run
+```
+
+### With Docker:
+```bash
+make docker-run
+# or
+docker build -t db .
+docker run --rm -p 3223:3223 db
+```
+
+The image runs on default configuration with `DB_ADDRESS=0.0.0.0:3223` set, so the server is
+reachable through the published port, and logs to stdout for `docker logs`. Configure it with
+environment variables:
+
+```bash
+docker run --rm -p 3223:3223 -e DB_LOG_LEVEL=debug -e DB_MAX_CONNECTIONS=500 db
 ```
 
 ## Using the CLI Client
@@ -214,6 +243,43 @@ OK
 > exit
 ```
 
+## Go Client Library
+
+External Go programs can use the database through the public client package —
+the only supported import path for external consumers:
+
+```go
+import "github.com/OutOfStack/db/client"
+
+c, err := client.New(client.WithAddress("127.0.0.1:3223"))
+if err != nil {
+    return err
+}
+defer c.Close()
+
+err = c.Set(ctx, "users", "name", "Alice")
+val, err := c.Get(ctx, "users", "name") // returns client.ErrNotFound if the key is missing
+err = c.Del(ctx, "users", "name")
+```
+
+For distributed deployments, configure a connection pool instead of a single address:
+
+```go
+c, err := client.New(
+    client.WithServers(
+        client.Server{Address: "127.0.0.1:3223", Role: client.RoleMaster},
+        client.Server{Address: "127.0.0.1:3224", Role: client.RoleStandby},
+    ),
+    client.WithStrategy(client.MasterFirst),
+    client.WithRetries(3, time.Second),
+)
+```
+
+Error handling:
+- `client.ErrNotFound` — sentinel returned by `Get`/`Del` for missing keys (check with `errors.Is`)
+- `*client.ServerError` — any other error message returned by the server (check with `errors.As`)
+- `Raw(ctx, command)` — escape hatch that sends a raw command line and returns the response text as is
+
 ## Building
 
 Build both server and client:
@@ -230,7 +296,8 @@ go build -o bin/db-cli ./cmd/db-cli
 ## Project Structure
 
 ```
-├── cmd/                          # Command-line applications
+├── client/                      # Public Go client library
+├── cmd/                         # Command-line applications
 │   ├── db/                      # Database server
 │   │   └── main.go
 │   └── db-cli/                  # CLI client

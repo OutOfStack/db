@@ -3,9 +3,21 @@ package config
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strconv"
 	"time"
 
 	"github.com/OutOfStack/db/internal/engine"
+)
+
+// Environment variables that override server configuration values
+const (
+	envAddress        = "DB_ADDRESS"
+	envMaxConnections = "DB_MAX_CONNECTIONS"
+	envMaxMessageSize = "DB_MAX_MESSAGE_SIZE"
+	envIdleTimeout    = "DB_IDLE_TIMEOUT"
+	envLogLevel       = "DB_LOG_LEVEL"
+	envLogOutput      = "DB_LOG_OUTPUT"
 )
 
 // ServerConfig - configuration for the database server
@@ -55,6 +67,42 @@ func DefaultServerConfig() *ServerConfig {
 			Output: "",
 		},
 	}
+}
+
+// applyEnvOverrides overrides configuration values from DB_* environment
+// variables. Environment variables take precedence over file values
+func (c *ServerConfig) applyEnvOverrides() error {
+	if v := os.Getenv(envAddress); v != "" {
+		c.Network.Address = v
+	}
+	if v := os.Getenv(envMaxConnections); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", envMaxConnections, err)
+		}
+		c.Network.MaxConnections = n
+	}
+	if v := os.Getenv(envMaxMessageSize); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", envMaxMessageSize, err)
+		}
+		c.Network.MaxMessageSizeKB = n
+	}
+	if v := os.Getenv(envIdleTimeout); v != "" {
+		d, err := time.ParseDuration(v)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", envIdleTimeout, err)
+		}
+		c.Network.IdleTimeout = d
+	}
+	if v := os.Getenv(envLogLevel); v != "" {
+		c.Logging.Level = v
+	}
+	if v := os.Getenv(envLogOutput); v != "" {
+		c.Logging.Output = v
+	}
+	return nil
 }
 
 // Validate checks if the configuration values are valid
