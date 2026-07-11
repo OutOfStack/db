@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/OutOfStack/db/internal/compute"
@@ -14,6 +16,7 @@ import (
 	"github.com/OutOfStack/db/internal/engine"
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/parser"
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/storage"
 )
 
@@ -59,7 +62,7 @@ func main() {
 
 	srv, err := network.NewTCPServer(cfg.Network.Address, logger,
 		network.WithServerIdleTimeout(cfg.Network.IdleTimeout),
-		network.WithServerBufferSize(cfg.Network.MaxMessageSizeKB*1024),
+		network.WithServerMaxMessageSize(cfg.Network.MaxMessageSizeKB*1024),
 		network.WithServerMaxConnections(cfg.Network.MaxConnections))
 	if err != nil {
 		logger.Error("Failed to create server", "error", err)
@@ -71,12 +74,22 @@ func main() {
 
 	logger.Info("Server started", "address", cfg.Network.Address)
 
-	go srv.Start(ctx, func(ctx context.Context, req []byte) []byte {
-		res, rErr := comp.HandleRequest(ctx, string(req))
+	go srv.Start(ctx, func(ctx context.Context, cmd string, args []string) protocol.Reply {
+		res, rErr := comp.HandleRequest(ctx, cmd, args)
 		if rErr != nil {
-			return []byte(rErr.Error())
+			if errors.Is(rErr, storage.ErrNotFound) {
+				return protocol.NullBulkString()
+			}
+			return protocol.Error(rErr.Error())
 		}
-		return []byte(res)
+		switch strings.ToUpper(cmd) {
+		case "GET":
+			return protocol.BulkString(res)
+		case "SET", "DEL":
+			return protocol.SimpleString(res)
+		default:
+			return protocol.BulkString(res)
+		}
 	})
 
 	sigChan := make(chan os.Signal, 1)

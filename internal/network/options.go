@@ -12,11 +12,11 @@ func WithClientIdleTimeout(d time.Duration) TCPClientOption {
 	}
 }
 
-// WithClientBufferSize sets the read/write buffer size for a TCPClient.
-func WithClientBufferSize(size int) TCPClientOption {
+// WithClientMaxMessageSize sets the maximum decoded message size in bytes for a TCPClient.
+func WithClientMaxMessageSize(size int) TCPClientOption {
 	return func(c *TCPClient) {
 		if size > 0 {
-			c.bufferSize = size
+			c.maxMessageSize = size
 		}
 	}
 }
@@ -31,11 +31,11 @@ func WithServerIdleTimeout(d time.Duration) TCPServerOption {
 	}
 }
 
-// WithServerBufferSize sets the read/write buffer size for a TCPServer.
-func WithServerBufferSize(size int) TCPServerOption {
+// WithServerMaxMessageSize sets the maximum decoded message size in bytes for a TCPServer.
+func WithServerMaxMessageSize(size int) TCPServerOption {
 	return func(s *TCPServer) {
 		if size > 0 {
-			s.bufferSize = size
+			s.maxMessageSize = size
 		}
 	}
 }

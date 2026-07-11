@@ -15,7 +15,7 @@ type Storage interface {
 
 // Parser is an interface for a parser
 type Parser interface {
-	Parse(input string) (string, []string, error)
+	Parse(cmd string, args []string) (string, []string, error)
 }
 
 // Compute represents compute layer
@@ -30,9 +30,9 @@ func New(parser Parser, storage Storage, logger *slog.Logger) *Compute {
 	return &Compute{parser: parser, storage: storage, logger: logger}
 }
 
-// HandleRequest processes the input request string and returns the result or an error
-func (c *Compute) HandleRequest(ctx context.Context, input string) (string, error) {
-	cmd, args, err := c.parser.Parse(input)
+// HandleRequest validates and executes a decoded request.
+func (c *Compute) HandleRequest(ctx context.Context, cmd string, args []string) (string, error) {
+	cmd, args, err := c.parser.Parse(cmd, args)
 	if err != nil {
 		c.logger.Error("Parse error", "error", err)
 		return "", err

@@ -1,10 +1,12 @@
 package client_test
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,27 +15,28 @@ import (
 	"github.com/OutOfStack/db/internal/engine"
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/parser"
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/storage"
 )
 
 // startServer starts an in-process database server on an ephemeral port
 // and returns its address
-func startServer(t *testing.T) string {
+func startServer(t *testing.T, opts ...network.TCPServerOption) string {
 	t.Helper()
 
-	addr, _ := startStoppableServer(t)
+	addr, _ := startStoppableServer(t, opts...)
 	return addr
 }
 
 // startStoppableServer starts an in-process database server on an ephemeral
 // port and returns its address and a stop function. The stop function blocks
 // until the server no longer accepts new connections
-func startStoppableServer(t *testing.T) (addr string, stop func()) {
+func startStoppableServer(t *testing.T, opts ...network.TCPServerOption) (addr string, stop func()) {
 	t.Helper()
 
 	logger := slog.New(slog.DiscardHandler)
 
-	srv, err := network.NewTCPServer("127.0.0.1:0", logger)
+	srv, err := network.NewTCPServer("127.0.0.1:0", logger, opts...)
 	if err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
@@ -43,12 +46,22 @@ func startStoppableServer(t *testing.T) (addr string, stop func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	go srv.Start(ctx, func(ctx context.Context, req []byte) []byte {
-		res, rErr := comp.HandleRequest(ctx, string(req))
+	go srv.Start(ctx, func(ctx context.Context, cmd string, args []string) protocol.Reply {
+		res, rErr := comp.HandleRequest(ctx, cmd, args)
 		if rErr != nil {
-			return []byte(rErr.Error())
+			if errors.Is(rErr, storage.ErrNotFound) {
+				return protocol.NullBulkString()
+			}
+			return protocol.Error(rErr.Error())
 		}
-		return []byte(res)
+		switch strings.ToUpper(cmd) {
+		case "GET":
+			return protocol.BulkString(res)
+		case "SET", "DEL":
+			return protocol.SimpleString(res)
+		default:
+			return protocol.BulkString(res)
+		}
 	})
 
 	addr = srv.Addr().String()
@@ -112,6 +125,18 @@ func TestClient_RoundTrip(t *testing.T) {
 	if err = c.Del(ctx, "users", "name"); !errors.Is(err, client.ErrNotFound) {
 		t.Errorf("Del() of missing key error = %v, want ErrNotFound", err)
 	}
+
+	framedValue := "hello world\nwith\x00bytes"
+	if err = c.Set(ctx, "users", "framed", framedValue); err != nil {
+		t.Fatalf("Set() framed value error = %v", err)
+	}
+	got, err = c.Get(ctx, "users", "framed")
+	if err != nil {
+		t.Fatalf("Get() framed value error = %v", err)
+	}
+	if got != framedValue {
+		t.Errorf("Get() framed value = %q, want %q", got, framedValue)
+	}
 }
 
 func TestClient_Raw_RoundTrip(t *testing.T) {
@@ -142,6 +167,132 @@ func TestClient_Raw_RoundTrip(t *testing.T) {
 	}
 	if resp != "GET requires 2 arguments: GET <table> <key>" {
 		t.Errorf("Raw(GET) = %q, want arity error text", resp)
+	}
+
+	resp, err = c.Raw(ctx, `SET users quoted "vlad has spaces"`)
+	if err != nil {
+		t.Fatalf("Raw(quoted SET) error = %v", err)
+	}
+	if resp != "OK" {
+		t.Errorf("Raw(quoted SET) = %q, want OK", resp)
+	}
+	got, err := c.Get(ctx, "users", "quoted")
+	if err != nil {
+		t.Fatalf("Get(quoted) error = %v", err)
+	}
+	if got != "vlad has spaces" {
+		t.Errorf("Get(quoted) = %q, want quoted value", got)
+	}
+}
+
+func TestClient_PipelinedCommands(t *testing.T) {
+	t.Parallel()
+
+	addr := startServer(t)
+
+	dialer := &net.Dialer{}
+	conn, err := dialer.DialContext(t.Context(), "tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	if err = protocol.WriteCommand(conn, "SET", []string{"users", "name", "vlad"}); err != nil {
+		t.Fatalf("WriteCommand(SET) error = %v", err)
+	}
+	if err = protocol.WriteCommand(conn, "GET", []string{"users", "name"}); err != nil {
+		t.Fatalf("WriteCommand(GET) error = %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	reply, err := protocol.ReadReply(reader, 1024)
+	if err != nil {
+		t.Fatalf("ReadReply(SET) error = %v", err)
+	}
+	if reply.Kind != protocol.ReplySimpleString || reply.Value != "OK" {
+		t.Fatalf("SET reply = %#v, want +OK", reply)
+	}
+	reply, err = protocol.ReadReply(reader, 1024)
+	if err != nil {
+		t.Fatalf("ReadReply(GET) error = %v", err)
+	}
+	if reply.Kind != protocol.ReplyBulkString || reply.Value != "vlad" {
+		t.Fatalf("GET reply = %#v, want bulk vlad", reply)
+	}
+}
+
+func TestClient_MessageSizeLimit(t *testing.T) {
+	t.Parallel()
+
+	const serverLimit = 1024
+	addr := startServer(t, network.WithServerMaxMessageSize(serverLimit))
+
+	c, err := client.New(client.WithAddress(addr))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer c.Close()
+
+	ctx := t.Context()
+
+	// large-but-legal request near the limit round-trips
+	// (frame overhead for SET users big <value> is ~40 bytes)
+	nearLimit := strings.Repeat("x", serverLimit-64)
+	if err = c.Set(ctx, "users", "big", nearLimit); err != nil {
+		t.Fatalf("Set() near limit error = %v", err)
+	}
+	got, err := c.Get(ctx, "users", "big")
+	if err != nil || got != nearLimit {
+		t.Fatalf("Get() near limit error = %v, value match = %v", err, got == nearLimit)
+	}
+
+	// request over the limit gets a clean -ERR, not a broken connection
+	err = c.Set(ctx, "users", "big", strings.Repeat("x", serverLimit*2))
+	if srvErr, ok := errors.AsType[*client.ServerError](err); !ok || !strings.Contains(srvErr.Msg, "message size exceeds limit") {
+		t.Fatalf("Set() over limit error = %v, want ServerError about size limit", err)
+	}
+
+	// the client stays usable afterwards
+	if err = c.Set(ctx, "users", "after", "ok"); err != nil {
+		t.Fatalf("Set() after rejected request error = %v", err)
+	}
+	if got, err = c.Get(ctx, "users", "after"); err != nil || got != "ok" {
+		t.Errorf("Get() after rejected request = %q, %v; want %q, nil", got, err, "ok")
+	}
+}
+
+func TestClient_OversizedReplyDoesNotDesyncConnection(t *testing.T) {
+	t.Parallel()
+
+	// server accepts large values, but the client only accepts 1KB replies
+	addr := startServer(t, network.WithServerMaxMessageSize(8192))
+
+	c, err := client.New(client.WithAddress(addr), client.WithMaxMessageSize(1))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer c.Close()
+
+	ctx := t.Context()
+
+	big := strings.Repeat("x", 3000)
+	if err = c.Set(ctx, "users", "big", big); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	// the reply exceeds the client's limit and must fail...
+	if _, err = c.Get(ctx, "users", "big"); err == nil || !strings.Contains(err.Error(), "message size exceeds limit") {
+		t.Fatalf("Get() oversized reply error = %v, want size limit error", err)
+	}
+
+	// ...without leaving the rejected reply's bytes on the connection:
+	// subsequent commands must see their own replies
+	if err = c.Set(ctx, "users", "small", "v"); err != nil {
+		t.Fatalf("Set() after oversized reply error = %v", err)
+	}
+	got, err := c.Get(ctx, "users", "small")
+	if err != nil || got != "v" {
+		t.Errorf("Get() after oversized reply = %q, %v; want %q, nil", got, err, "v")
 	}
 }
 

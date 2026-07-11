@@ -1,6 +1,7 @@
 package network
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -9,15 +10,23 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"github.com/OutOfStack/db/internal/protocol"
 )
 
 const (
-	defaultBufferSize = 1024
-	defaultTimeout    = 1 * time.Minute
+	// defaultMaxMessageSize mirrors the 4KB config default (max_message_size)
+	defaultMaxMessageSize = 4096
+	defaultTimeout        = 1 * time.Minute
+
+	// errorDrainTimeout bounds draining of unread request bytes before closing
+	// a connection after a protocol error, so the error reply is not lost to a
+	// TCP reset caused by closing with pending input
+	errorDrainTimeout = 100 * time.Millisecond
 )
 
-// RequestHandler is a function that handles a client request
-type RequestHandler func(context.Context, []byte) []byte
+// RequestHandler is a function that handles a decoded client command.
+type RequestHandler func(context.Context, string, []string) protocol.Reply
 
 // TCPServer represents a TCP server that handles multiple client connections
 type TCPServer struct {
@@ -26,8 +35,8 @@ type TCPServer struct {
 	wg                  sync.WaitGroup
 	connectionSemaphore chan struct{}
 
-	idleTimeout time.Duration
-	bufferSize  int
+	idleTimeout    time.Duration
+	maxMessageSize int
 }
 
 // NewTCPServer creates a new Server instance with the given configuration and logger.
@@ -47,7 +56,7 @@ func NewTCPServer(address string, logger *slog.Logger, options ...TCPServerOptio
 		listener:            listener,
 		logger:              logger,
 		connectionSemaphore: make(chan struct{}, 100),
-		bufferSize:          defaultBufferSize,
+		maxMessageSize:      defaultMaxMessageSize,
 		idleTimeout:         defaultTimeout,
 	}
 
@@ -65,9 +74,7 @@ func (s *TCPServer) Addr() net.Addr {
 
 // Start begins accepting connections
 func (s *TCPServer) Start(ctx context.Context, handler RequestHandler) {
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
+	s.wg.Go(func() {
 		for {
 			conn, err := s.listener.Accept()
 			if err != nil {
@@ -92,7 +99,7 @@ func (s *TCPServer) Start(ctx context.Context, handler RequestHandler) {
 				}
 			}
 		}
-	}()
+	})
 
 	<-ctx.Done()
 
@@ -115,7 +122,7 @@ func (s *TCPServer) handleConnection(ctx context.Context, conn net.Conn, handler
 
 	s.logger.Info("Client connected", "address", conn.RemoteAddr())
 
-	buf := make([]byte, s.bufferSize)
+	reader := bufio.NewReader(conn)
 
 	for {
 		// set the read deadline
@@ -124,35 +131,36 @@ func (s *TCPServer) handleConnection(ctx context.Context, conn net.Conn, handler
 			return
 		}
 
-		// read data from the connection
-		n, err := conn.Read(buf)
+		// read one full RESP command from the connection
+		cmd, args, err := protocol.ReadCommand(reader, s.maxMessageSize)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
+			// client disconnected (possibly mid-frame): close quietly
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 				return
 			}
-			s.logger.Error("Error reading from connection", "error", err)
+			// idle timeout is a normal disconnect, not an error
+			if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
+				s.logger.Info("Closing idle connection", "address", conn.RemoteAddr())
+				return
+			}
+			s.logger.Error("Error reading command from connection", "error", err)
+			if wErr := s.writeReply(conn, protocol.Error(err.Error())); wErr != nil {
+				s.logger.Error("Failed to send protocol error", "error", wErr)
+				return
+			}
+			// drain pending request bytes briefly: closing with unread input
+			// can trigger a TCP reset that discards the queued error reply
+			if dErr := conn.SetReadDeadline(time.Now().Add(errorDrainTimeout)); dErr == nil {
+				_, _ = io.Copy(io.Discard, reader)
+			}
 			return
 		}
 
-		if n > 0 {
-			if n == s.bufferSize {
-				s.logger.Warn("Request too large")
-				break
-			}
-
-			// process request
-			response := handler(ctx, buf[:n])
-
-			// set write deadline
-			if err = conn.SetWriteDeadline(time.Now().Add(s.idleTimeout)); err != nil {
-				s.logger.Error("Failed to set write deadline", "error", err)
-				return
-			}
-			// send response
-			if _, err = conn.Write(response); err != nil {
-				s.logger.Error("Failed to send response", "error", err)
-				return
-			}
+		// process request
+		response := handler(ctx, cmd, args)
+		if err = s.writeReply(conn, response); err != nil {
+			s.logger.Error("Failed to send response", "error", err)
+			return
 		}
 
 		// check for context cancellation
@@ -162,4 +170,14 @@ func (s *TCPServer) handleConnection(ctx context.Context, conn net.Conn, handler
 		default:
 		}
 	}
+}
+
+func (s *TCPServer) writeReply(conn net.Conn, reply protocol.Reply) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(s.idleTimeout)); err != nil {
+		return fmt.Errorf("failed to set write deadline: %w", err)
+	}
+	if err := protocol.WriteReply(conn, reply); err != nil {
+		return fmt.Errorf("failed to write reply: %w", err)
+	}
+	return nil
 }

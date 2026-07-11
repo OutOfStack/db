@@ -3,26 +3,33 @@ package client_test
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/OutOfStack/db/client"
+	"github.com/OutOfStack/db/internal/protocol"
 )
 
-// fakeTransport records sent data and returns a canned response
+type sentCommand struct {
+	cmd  string
+	args []string
+}
+
+// fakeTransport records sent commands and returns a canned response
 type fakeTransport struct {
-	resp   string
+	resp   protocol.Reply
 	err    error
-	sent   []string
+	sent   []sentCommand
 	closed bool
 }
 
-func (f *fakeTransport) Send(data []byte) ([]byte, error) {
-	f.sent = append(f.sent, string(data))
+func (f *fakeTransport) Send(cmd string, args []string) (protocol.Reply, error) {
+	f.sent = append(f.sent, sentCommand{cmd: cmd, args: append([]string(nil), args...)})
 	if f.err != nil {
-		return nil, f.err
+		return protocol.Reply{}, f.err
 	}
-	return []byte(f.resp), nil
+	return f.resp, nil
 }
 
 func (f *fakeTransport) Close() error {
@@ -35,15 +42,15 @@ func TestClient_Set(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		resp      string
+		resp      protocol.Reply
 		sendErr   error
-		wantSent  string
 		wantErr   bool
 		wantSrvEr bool
 	}{
-		{"ok", "OK", nil, "SET users name vlad\n", false, false},
-		{"server error", "table name too long", nil, "SET users name vlad\n", true, true},
-		{"transport error", "", errors.New("conn refused"), "SET users name vlad\n", true, false},
+		{"ok", protocol.SimpleString("OK"), nil, false, false},
+		{"server error", protocol.Error("table name too long"), nil, true, true},
+		{"unexpected response", protocol.BulkString("weird"), nil, true, true},
+		{"transport error", protocol.Reply{}, errors.New("conn refused"), true, false},
 	}
 
 	for _, tt := range tests {
@@ -61,8 +68,9 @@ func TestClient_Set(t *testing.T) {
 			if errors.As(err, &srvErr) != tt.wantSrvEr {
 				t.Errorf("Set() ServerError = %v, want %v", err, tt.wantSrvEr)
 			}
-			if len(ft.sent) != 1 || ft.sent[0] != tt.wantSent {
-				t.Errorf("sent = %q, want %q", ft.sent, tt.wantSent)
+			wantSent := []sentCommand{{cmd: "SET", args: []string{"users", "name", "vlad"}}}
+			if !reflect.DeepEqual(ft.sent, wantSent) {
+				t.Errorf("sent = %#v, want %#v", ft.sent, wantSent)
 			}
 		})
 	}
@@ -73,13 +81,14 @@ func TestClient_Get(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		resp    string
+		resp    protocol.Reply
 		want    string
 		wantErr error
 	}{
-		{"value", "vlad", "vlad", nil},
-		{"value with trailing newline", "vlad\n", "vlad", nil},
-		{"not found", "not found", "", client.ErrNotFound},
+		{"value", protocol.BulkString("vlad"), "vlad", nil},
+		{"value with trailing newline", protocol.BulkString("vlad\n"), "vlad\n", nil},
+		{"not found", protocol.NullBulkString(), "", client.ErrNotFound},
+		{"server error", protocol.Error("bad"), "", nil},
 	}
 
 	for _, tt := range tests {
@@ -89,6 +98,12 @@ func TestClient_Get(t *testing.T) {
 			c := client.NewWithTransport(&fakeTransport{resp: tt.resp})
 
 			got, err := c.Get(t.Context(), "users", "name")
+			if tt.resp.Kind == protocol.ReplyError {
+				if _, ok := errors.AsType[*client.ServerError](err); !ok {
+					t.Fatalf("Get() error = %v, want ServerError", err)
+				}
+				return
+			}
 			if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("Get() error = %v, want %v", err, tt.wantErr)
 			}
@@ -104,13 +119,14 @@ func TestClient_Del(t *testing.T) {
 
 	tests := []struct {
 		name      string
-		resp      string
+		resp      protocol.Reply
 		wantErr   error
 		wantSrvEr bool
 	}{
-		{"ok", "OK", nil, false},
-		{"not found", "not found", client.ErrNotFound, false},
-		{"server error", "some error", nil, true},
+		{"ok", protocol.SimpleString("OK"), nil, false},
+		{"not found", protocol.NullBulkString(), client.ErrNotFound, false},
+		{"server error", protocol.Error("some error"), nil, true},
+		{"unexpected response", protocol.BulkString("some error"), nil, true},
 	}
 
 	for _, tt := range tests {
@@ -140,40 +156,49 @@ func TestClient_Del(t *testing.T) {
 func TestClient_Raw(t *testing.T) {
 	t.Parallel()
 
-	ft := &fakeTransport{resp: "not found\n"}
+	ft := &fakeTransport{resp: protocol.NullBulkString()}
 	c := client.NewWithTransport(ft)
 
 	// Raw passes the response through without error mapping
-	got, err := c.Raw(t.Context(), "GET users missing")
+	got, err := c.Raw(t.Context(), `GET users "missing key"`)
 	if err != nil {
 		t.Fatalf("Raw() error = %v", err)
 	}
 	if got != "not found" {
 		t.Errorf("Raw() = %q, want %q", got, "not found")
 	}
-	if ft.sent[0] != "GET users missing\n" {
-		t.Errorf("sent = %q, want %q", ft.sent[0], "GET users missing\n")
+	wantSent := []sentCommand{{cmd: "GET", args: []string{"users", "missing key"}}}
+	if !reflect.DeepEqual(ft.sent, wantSent) {
+		t.Errorf("sent = %#v, want %#v", ft.sent, wantSent)
+	}
+
+	ft.resp = protocol.BulkString("hello\nworld")
+	got, err = c.Raw(t.Context(), `GET users hello\nworld`)
+	if err != nil {
+		t.Fatalf("Raw() with escape error = %v", err)
+	}
+	if got != "hello\nworld" {
+		t.Errorf("Raw() escaped response = %q, want newline value", got)
 	}
 
 	if _, err = c.Raw(t.Context(), "   "); err == nil {
 		t.Error("Raw() with empty command should fail")
 	}
-	if _, err = c.Raw(t.Context(), "SET t k v\nDEL t k"); err == nil {
-		t.Error("Raw() with embedded newline should fail")
+	if _, err = c.Raw(t.Context(), `SET t k "unterminated`); err == nil {
+		t.Error("Raw() with unterminated quote should fail")
 	}
-	// trailing newlines are trimmed, only embedded ones are rejected
-	if _, err = c.Raw(t.Context(), "GET t\rk"); err == nil {
-		t.Error("Raw() with embedded carriage return should fail")
+	if _, err = c.Raw(t.Context(), `SET t k trailing\`); err == nil {
+		t.Error("Raw() with unfinished escape should fail")
 	}
-	if len(ft.sent) != 1 {
-		t.Errorf("rejected commands must not reach the transport, sent: %q", ft.sent)
+	if len(ft.sent) != 2 {
+		t.Errorf("rejected commands must not reach the transport, sent: %#v", ft.sent)
 	}
 }
 
 func TestClient_ArgValidation(t *testing.T) {
 	t.Parallel()
 
-	ft := &fakeTransport{resp: "OK"}
+	ft := &fakeTransport{resp: protocol.SimpleString("OK")}
 	c := client.NewWithTransport(ft)
 
 	tests := []struct {
@@ -182,10 +207,6 @@ func TestClient_ArgValidation(t *testing.T) {
 	}{
 		{"empty table", func() error { return c.Set(t.Context(), "", "k", "v") }},
 		{"empty key", func() error { _, err := c.Get(t.Context(), "t", ""); return err }},
-		{"key with space", func() error { return c.Del(t.Context(), "t", "a b") }},
-		{"value with space", func() error { return c.Set(t.Context(), "t", "k", "a b") }},
-		{"value with tab", func() error { return c.Set(t.Context(), "t", "k", "a\tb") }},
-		{"value with newline", func() error { return c.Set(t.Context(), "t", "k", "a\nb") }},
 		{"table too long", func() error { return c.Set(t.Context(), strings.Repeat("t", 129), "k", "v") }},
 	}
 
@@ -195,14 +216,31 @@ func TestClient_ArgValidation(t *testing.T) {
 		}
 	}
 	if len(ft.sent) != 0 {
-		t.Errorf("invalid arguments must not reach the transport, sent: %q", ft.sent)
+		t.Errorf("invalid arguments must not reach the transport, sent: %#v", ft.sent)
+	}
+}
+
+func TestClient_AllowsFramedValues(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransport{resp: protocol.SimpleString("OK")}
+	c := client.NewWithTransport(ft)
+
+	value := "a b\nc\x00"
+	if err := c.Set(t.Context(), "t", "k", value); err != nil {
+		t.Fatalf("Set() error = %v", err)
+	}
+
+	wantSent := []sentCommand{{cmd: "SET", args: []string{"t", "k", value}}}
+	if !reflect.DeepEqual(ft.sent, wantSent) {
+		t.Errorf("sent = %#v, want %#v", ft.sent, wantSent)
 	}
 }
 
 func TestClient_ContextCanceled(t *testing.T) {
 	t.Parallel()
 
-	ft := &fakeTransport{resp: "OK"}
+	ft := &fakeTransport{resp: protocol.SimpleString("OK")}
 	c := client.NewWithTransport(ft)
 
 	ctx, cancel := context.WithCancel(t.Context())
@@ -212,7 +250,7 @@ func TestClient_ContextCanceled(t *testing.T) {
 		t.Errorf("Set() error = %v, want context.Canceled", err)
 	}
 	if len(ft.sent) != 0 {
-		t.Errorf("canceled context must not reach the transport, sent: %q", ft.sent)
+		t.Errorf("canceled context must not reach the transport, sent: %#v", ft.sent)
 	}
 }
 

@@ -21,12 +21,11 @@ func TestHandleRequest_Success(t *testing.T) {
 	mockParser := mocks.NewMockParser(ctrl)
 	mockStorage := mocks.NewMockStorage(ctrl)
 
-	input := "echo hello"
 	cmd := "echo"
 	args := []string{"hello"}
 	result := "hello"
 
-	mockParser.EXPECT().Parse(input).Return(cmd, args, nil)
+	mockParser.EXPECT().Parse(cmd, args).Return(cmd, args, nil)
 	mockStorage.EXPECT().Execute(gomock.Any(), cmd, args).Return(result, nil)
 
 	var logBuf bytes.Buffer
@@ -35,7 +34,7 @@ func TestHandleRequest_Success(t *testing.T) {
 	c := compute.New(mockParser, mockStorage, logger)
 	ctx := t.Context()
 
-	res, err := c.HandleRequest(ctx, input)
+	res, err := c.HandleRequest(ctx, cmd, args)
 	require.NoError(t, err)
 	require.Equal(t, result, res)
 }
@@ -49,10 +48,11 @@ func TestHandleRequest_ParserError(t *testing.T) {
 	mockParser := mocks.NewMockParser(ctrl)
 	mockStorage := mocks.NewMockStorage(ctrl)
 
-	input := "bad input"
+	cmd := "bad"
+	args := []string{"input"}
 	parseErr := errors.New("parse failed")
 
-	mockParser.EXPECT().Parse(input).Return("", nil, parseErr)
+	mockParser.EXPECT().Parse(cmd, args).Return("", nil, parseErr)
 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
@@ -60,7 +60,7 @@ func TestHandleRequest_ParserError(t *testing.T) {
 	c := compute.New(mockParser, mockStorage, logger)
 	ctx := t.Context()
 
-	res, err := c.HandleRequest(ctx, input)
+	res, err := c.HandleRequest(ctx, cmd, args)
 	require.Error(t, err)
 	require.Empty(t, res)
 	require.Contains(t, err.Error(), "parse failed")
@@ -75,12 +75,11 @@ func TestHandleRequest_StorageError(t *testing.T) {
 	mockParser := mocks.NewMockParser(ctrl)
 	mockStorage := mocks.NewMockStorage(ctrl)
 
-	input := "echo hello"
 	cmd := "echo"
 	args := []string{"hello"}
 	storageErr := errors.New("storage failed")
 
-	mockParser.EXPECT().Parse(input).Return(cmd, args, nil)
+	mockParser.EXPECT().Parse(cmd, args).Return(cmd, args, nil)
 	mockStorage.EXPECT().Execute(gomock.Any(), cmd, args).Return("", storageErr)
 
 	var logBuf bytes.Buffer
@@ -89,7 +88,7 @@ func TestHandleRequest_StorageError(t *testing.T) {
 	c := compute.New(mockParser, mockStorage, logger)
 	ctx := t.Context()
 
-	res, err := c.HandleRequest(ctx, input)
+	res, err := c.HandleRequest(ctx, cmd, args)
 	require.Error(t, err)
 	require.Empty(t, res)
 	require.Contains(t, err.Error(), "storage failed")
