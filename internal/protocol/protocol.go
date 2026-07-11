@@ -250,7 +250,10 @@ func readBulkStringBody(r *bufio.Reader, lenText string, maxMessageSize int, rea
 	if n < -1 {
 		return "", false, errors.New("invalid negative bulk string length")
 	}
-	if maxMessageSize > 0 && *read+n+2 > maxMessageSize {
+	// overflow-safe size check: n is non-negative here, so compare against the
+	// remaining budget instead of computing *read+n+2, which can overflow for
+	// lengths near math.MaxInt and bypass the limit.
+	if maxMessageSize > 0 && n > maxMessageSize-*read-2 {
 		return "", false, errors.New("message size exceeds limit")
 	}
 
