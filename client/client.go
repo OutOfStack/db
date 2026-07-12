@@ -13,16 +13,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
-	"unicode"
 
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/pool"
+	"github.com/OutOfStack/db/internal/protocol"
 )
 
 const (
-	respOK       = "OK"
-	respNotFound = "not found"
+	respOK = "OK"
 
 	// maxTableNameLen mirrors the server-side parser limit so invalid
 	// table names are rejected before reaching the wire
@@ -32,7 +32,7 @@ const (
 // transport is the minimal connection interface the client needs.
 // Satisfied by *network.TCPClient and *pool.Client
 type transport interface {
-	Send(data []byte) ([]byte, error)
+	Send(cmd string, args []string) (protocol.Reply, error)
 	Close() error
 }
 
@@ -53,7 +53,7 @@ func New(opts ...Option) (*Client, error) {
 
 	netOpts := []network.TCPClientOption{
 		network.WithClientIdleTimeout(o.idleTimeout),
-		network.WithClientBufferSize(o.maxMessageSizeKB * 1024),
+		network.WithClientMaxMessageSize(o.maxMessageSizeKB * 1024),
 	}
 
 	if len(o.servers) > 0 {
@@ -88,37 +88,44 @@ func (c *Client) Set(ctx context.Context, table, key, value string) error {
 		return err
 	}
 
-	resp, err := c.send(ctx, "SET "+table+" "+key+" "+value)
+	resp, err := c.send(ctx, "SET", []string{table, key, value})
 	if err != nil {
 		return err
 	}
-	if resp != respOK {
-		return &ServerError{Msg: resp}
+	switch resp.Kind {
+	case protocol.ReplySimpleString:
+		if resp.Value == respOK {
+			return nil
+		}
+		return &ServerError{Msg: replyText(resp)}
+	case protocol.ReplyError:
+		return &ServerError{Msg: resp.Value}
+	default:
+		return &ServerError{Msg: replyText(resp)}
 	}
-	return nil
 }
 
 // Get returns the value stored under key in table.
 // Returns ErrNotFound if the key does not exist.
-//
-// Limitation: the current text protocol does not mark error responses, so a
-// stored value literally equal to "not found" is indistinguishable from a
-// missing key. Client-side validation rules out all other known server
-// errors for well-formed calls; a future protocol revision with framed
-// responses will remove the ambiguity entirely
 func (c *Client) Get(ctx context.Context, table, key string) (string, error) {
 	if err := validateArgs(table, key); err != nil {
 		return "", err
 	}
 
-	resp, err := c.send(ctx, "GET "+table+" "+key)
+	resp, err := c.send(ctx, "GET", []string{table, key})
 	if err != nil {
 		return "", err
 	}
-	if resp == respNotFound {
+	switch resp.Kind {
+	case protocol.ReplyBulkString, protocol.ReplySimpleString:
+		return resp.Value, nil
+	case protocol.ReplyNull:
 		return "", ErrNotFound
+	case protocol.ReplyError:
+		return "", &ServerError{Msg: resp.Value}
+	default:
+		return "", &ServerError{Msg: replyText(resp)}
 	}
-	return resp, nil
 }
 
 // Del deletes key from table.
@@ -128,34 +135,41 @@ func (c *Client) Del(ctx context.Context, table, key string) error {
 		return err
 	}
 
-	resp, err := c.send(ctx, "DEL "+table+" "+key)
+	resp, err := c.send(ctx, "DEL", []string{table, key})
 	if err != nil {
 		return err
 	}
-	switch resp {
-	case respOK:
-		return nil
-	case respNotFound:
+	switch resp.Kind {
+	case protocol.ReplySimpleString:
+		if resp.Value == respOK {
+			return nil
+		}
+		return &ServerError{Msg: replyText(resp)}
+	case protocol.ReplyNull:
 		return ErrNotFound
+	case protocol.ReplyError:
+		return &ServerError{Msg: resp.Value}
 	default:
-		return &ServerError{Msg: resp}
+		return &ServerError{Msg: replyText(resp)}
 	}
 }
 
 // Raw sends a raw command line to the server and returns the response text
 // as is, without error mapping. It gives access to commands that have no
-// typed wrapper yet
+// typed wrapper yet.
 func (c *Client) Raw(ctx context.Context, command string) (string, error) {
-	command = strings.TrimSpace(command)
-	if command == "" {
+	parts, err := splitCommandLine(command)
+	if err != nil {
+		return "", err
+	}
+	if len(parts) == 0 {
 		return "", errors.New("empty command")
 	}
-	// the protocol is line-oriented: embedded newlines would smuggle extra
-	// commands into the payload and desynchronize the connection
-	if strings.ContainsAny(command, "\r\n") {
-		return "", errors.New("command cannot contain newline characters")
+	resp, err := c.send(ctx, parts[0], parts[1:])
+	if err != nil {
+		return "", err
 	}
-	return c.send(ctx, command)
+	return replyText(resp), nil
 }
 
 // Close closes the client connection(s)
@@ -163,36 +177,130 @@ func (c *Client) Close() error {
 	return c.transport.Close()
 }
 
-// send sends a command line to the server and returns the trimmed response
-func (c *Client) send(ctx context.Context, command string) (string, error) {
+// send sends a command to the server and returns a typed response.
+func (c *Client) send(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
 	// the current transport cannot honor cancellation mid-call,
 	// so check the context before sending
 	if err := ctx.Err(); err != nil {
-		return "", err
+		return protocol.Reply{}, err
 	}
 
-	resp, err := c.transport.Send([]byte(command + "\n"))
+	resp, err := c.transport.Send(cmd, args)
 	if err != nil {
-		return "", fmt.Errorf("failed to send command: %w", err)
+		return protocol.Reply{}, fmt.Errorf("failed to send command: %w", err)
 	}
-	return strings.TrimSpace(string(resp)), nil
+	return resp, nil
 }
 
-// validateArgs checks that the table name and remaining arguments can be
-// carried by the whitespace-delimited text protocol
+func replyText(reply protocol.Reply) string {
+	switch reply.Kind {
+	case protocol.ReplySimpleString, protocol.ReplyBulkString, protocol.ReplyError:
+		return reply.Value
+	case protocol.ReplyNull:
+		return "not found"
+	case protocol.ReplyInteger:
+		return strconv.FormatInt(reply.Integer, 10)
+	case protocol.ReplyArray:
+		values := make([]string, 0, len(reply.Array))
+		for _, item := range reply.Array {
+			values = append(values, replyText(item))
+		}
+		return strings.Join(values, "\n")
+	default:
+		return ""
+	}
+}
+
+// validateArgs checks command arguments that are still constrained by database
+// semantics. RESP framing itself can carry whitespace, newlines, and NUL bytes.
 func validateArgs(table string, args ...string) error {
+	if table == "" {
+		return errors.New("table cannot be empty")
+	}
 	if len(table) > maxTableNameLen {
 		return fmt.Errorf("table name exceeds %d characters", maxTableNameLen)
 	}
-	for _, arg := range append([]string{table}, args...) {
-		if arg == "" {
-			return errors.New("argument cannot be empty")
-		}
-		if strings.ContainsFunc(arg, unicode.IsSpace) {
-			return fmt.Errorf("argument %q cannot contain whitespace", arg)
-		}
+	if len(args) > 0 && args[0] == "" {
+		return errors.New("key cannot be empty")
 	}
 	return nil
+}
+
+func splitCommandLine(command string) ([]string, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil, nil
+	}
+
+	var parts []string
+	var current strings.Builder
+	var quote rune
+	escaped := false
+	inToken := false
+
+	for _, r := range command {
+		if escaped {
+			current.WriteRune(unescape(r))
+			escaped = false
+			inToken = true
+			continue
+		}
+
+		if r == '\\' {
+			escaped = true
+			inToken = true
+			continue
+		}
+
+		if quote != 0 {
+			if r == quote {
+				quote = 0
+				continue
+			}
+			current.WriteRune(r)
+			inToken = true
+			continue
+		}
+
+		switch r {
+		case '\'', '"':
+			quote = r
+			inToken = true
+		case ' ', '\t', '\r', '\n':
+			if inToken {
+				parts = append(parts, current.String())
+				current.Reset()
+				inToken = false
+			}
+		default:
+			current.WriteRune(r)
+			inToken = true
+		}
+	}
+
+	if escaped {
+		return nil, errors.New("unfinished escape sequence")
+	}
+	if quote != 0 {
+		return nil, errors.New("unterminated quoted string")
+	}
+	if inToken {
+		parts = append(parts, current.String())
+	}
+	return parts, nil
+}
+
+func unescape(r rune) rune {
+	switch r {
+	case 'n':
+		return '\n'
+	case 'r':
+		return '\r'
+	case 't':
+		return '\t'
+	default:
+		return r
+	}
 }
 
 // toPoolServers converts public Server values to pool config entries

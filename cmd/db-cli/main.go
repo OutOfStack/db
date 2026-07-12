@@ -53,6 +53,7 @@ func main() {
 	}
 	fmt.Println("Available commands:")
 	fmt.Println("  SET table key value")
+	fmt.Println("  SET table key \"value with spaces\"")
 	fmt.Println("  GET table key")
 	fmt.Println("  DEL table key")
 	fmt.Println("Type 'exit' to quit")

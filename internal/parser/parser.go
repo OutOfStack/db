@@ -16,15 +16,12 @@ func New() *Parser {
 	return &Parser{}
 }
 
-// Parse parses the input string and returns the command and arguments
-func (p *Parser) Parse(input string) (string, []string, error) {
-	fields := strings.Fields(input)
-	if len(fields) == 0 {
+// Parse validates a decoded command name and its arguments
+func (p *Parser) Parse(cmd string, args []string) (string, []string, error) {
+	cmd = strings.ToUpper(strings.TrimSpace(cmd))
+	if cmd == "" {
 		return "", nil, errors.New("empty input")
 	}
-
-	cmd := fields[0]
-	args := fields[1:]
 
 	switch cmd {
 	case "SET":
@@ -41,6 +38,9 @@ func (p *Parser) Parse(input string) (string, []string, error) {
 
 	if len(args[0]) > maxTableNameLen {
 		return "", nil, errors.New("table name too long")
+	}
+	if args[0] == "" || args[1] == "" {
+		return "", nil, errors.New("table and key cannot be empty")
 	}
 
 	return cmd, args, nil

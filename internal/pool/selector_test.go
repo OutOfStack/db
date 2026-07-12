@@ -26,8 +26,7 @@ func TestMasterFirstSelector(t *testing.T) {
 	server := selector.Select()
 	if server == nil {
 		t.Fatal("Expected server, got nil")
-	}
-	if server.Role != pool.RoleMaster {
+	} else if server.Role != pool.RoleMaster {
 		t.Errorf("Expected master, got %s", server.Role)
 	}
 
@@ -39,8 +38,7 @@ func TestMasterFirstSelector(t *testing.T) {
 	server = selector.Select()
 	if server == nil {
 		t.Fatal("Expected standby server, got nil")
-	}
-	if server.Role != pool.RoleStandby {
+	} else if server.Role != pool.RoleStandby {
 		t.Errorf("Expected standby, got %s", server.Role)
 	}
 
@@ -59,8 +57,7 @@ func TestMasterFirstSelector(t *testing.T) {
 	server = selector.Select()
 	if server == nil {
 		t.Fatal("Expected server after reset, got nil")
-	}
-	if server.Role != pool.RoleMaster {
+	} else if server.Role != pool.RoleMaster {
 		t.Errorf("Expected master after reset, got %s", server.Role)
 	}
 }

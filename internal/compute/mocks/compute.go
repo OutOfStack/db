@@ -80,9 +80,9 @@ func (m *MockParser) EXPECT() *MockParserMockRecorder {
 }
 
 // Parse mocks base method.
-func (m *MockParser) Parse(input string) (string, []string, error) {
+func (m *MockParser) Parse(cmd string, args []string) (string, []string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Parse", input)
+	ret := m.ctrl.Call(m, "Parse", cmd, args)
 	ret0, _ := ret[0].(string)
 	ret1, _ := ret[1].([]string)
 	ret2, _ := ret[2].(error)
@@ -90,7 +90,7 @@ func (m *MockParser) Parse(input string) (string, []string, error) {
 }
 
 // Parse indicates an expected call of Parse.
-func (mr *MockParserMockRecorder) Parse(input any) *gomock.Call {
+func (mr *MockParserMockRecorder) Parse(cmd, args any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Parse", reflect.TypeOf((*MockParser)(nil).Parse), input)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Parse", reflect.TypeOf((*MockParser)(nil).Parse), cmd, args)
 }

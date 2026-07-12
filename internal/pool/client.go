@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/OutOfStack/db/internal/network"
+	"github.com/OutOfStack/db/internal/protocol"
 )
 
 // syncedConnection wraps a TCPClient with a mutex to serialize Send() calls
@@ -16,10 +17,10 @@ type syncedConnection struct {
 }
 
 // Send serializes Send() calls to prevent concurrent access corruption
-func (sc *syncedConnection) Send(data []byte) ([]byte, error) {
+func (sc *syncedConnection) Send(cmd string, args []string) (protocol.Reply, error) {
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
-	return sc.client.Send(data)
+	return sc.client.Send(cmd, args)
 }
 
 // Close closes the underlying connection
@@ -52,8 +53,8 @@ func NewClient(config *PoolConfig, options ...network.TCPClientOption) (*Client,
 	}, nil
 }
 
-// Send sends data using the pool, with automatic failover
-func (c *Client) Send(data []byte) ([]byte, error) {
+// Send sends a command using the pool, with automatic failover
+func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
 	var lastErr error
 	attempts := 0
 	maxAttempts := c.config.MaxRetries + 1 // initial attempt + retries
@@ -66,7 +67,7 @@ func (c *Client) Send(data []byte) ([]byte, error) {
 			c.selector.Reset()
 			server = c.selector.Select()
 			if server == nil {
-				return nil, errors.New("no servers available in pool")
+				return protocol.Reply{}, errors.New("no servers available in pool")
 			}
 		}
 
@@ -83,7 +84,7 @@ func (c *Client) Send(data []byte) ([]byte, error) {
 		}
 
 		// Try to send
-		resp, err := conn.Send(data)
+		resp, err := conn.Send(cmd, args)
 		if err != nil {
 			// Connection failed, mark server as failed and retry
 			c.selector.MarkFailed(server.Address)
@@ -101,9 +102,9 @@ func (c *Client) Send(data []byte) ([]byte, error) {
 	}
 
 	if lastErr != nil {
-		return nil, fmt.Errorf("all servers failed after %d attempts: %w", attempts, lastErr)
+		return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts: %w", attempts, lastErr)
 	}
-	return nil, fmt.Errorf("all servers failed after %d attempts", attempts)
+	return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts", attempts)
 }
 
 // getConnection gets or creates a connection to the specified address
