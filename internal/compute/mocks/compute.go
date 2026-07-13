@@ -13,6 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
+	protocol "github.com/OutOfStack/db/internal/protocol"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -41,10 +42,10 @@ func (m *MockStorage) EXPECT() *MockStorageMockRecorder {
 }
 
 // Execute mocks base method.
-func (m *MockStorage) Execute(ctx context.Context, cmd string, args []string) (string, error) {
+func (m *MockStorage) Execute(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "Execute", ctx, cmd, args)
-	ret0, _ := ret[0].(string)
+	ret0, _ := ret[0].(protocol.Reply)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }

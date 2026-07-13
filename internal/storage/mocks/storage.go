@@ -69,6 +69,20 @@ func (mr *MockEngineMockRecorder) Get(ctx, table, key any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Get", reflect.TypeOf((*MockEngine)(nil).Get), ctx, table, key)
 }
 
+// Keys mocks base method.
+func (m *MockEngine) Keys(ctx context.Context, table string) []string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Keys", ctx, table)
+	ret0, _ := ret[0].([]string)
+	return ret0
+}
+
+// Keys indicates an expected call of Keys.
+func (mr *MockEngineMockRecorder) Keys(ctx, table any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Keys", reflect.TypeOf((*MockEngine)(nil).Keys), ctx, table)
+}
+
 // Set mocks base method.
 func (m *MockEngine) Set(ctx context.Context, table, key, value string) error {
 	m.ctrl.T.Helper()
@@ -81,4 +95,32 @@ func (m *MockEngine) Set(ctx context.Context, table, key, value string) error {
 func (mr *MockEngineMockRecorder) Set(ctx, table, key, value any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Set", reflect.TypeOf((*MockEngine)(nil).Set), ctx, table, key, value)
+}
+
+// TableExists mocks base method.
+func (m *MockEngine) TableExists(ctx context.Context, table string) bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "TableExists", ctx, table)
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// TableExists indicates an expected call of TableExists.
+func (mr *MockEngineMockRecorder) TableExists(ctx, table any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "TableExists", reflect.TypeOf((*MockEngine)(nil).TableExists), ctx, table)
+}
+
+// Tables mocks base method.
+func (m *MockEngine) Tables(ctx context.Context) []string {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Tables", ctx)
+	ret0, _ := ret[0].([]string)
+	return ret0
+}
+
+// Tables indicates an expected call of Tables.
+func (mr *MockEngineMockRecorder) Tables(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tables", reflect.TypeOf((*MockEngine)(nil).Tables), ctx)
 }

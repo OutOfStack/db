@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -54,14 +55,7 @@ func startStoppableServer(t *testing.T, opts ...network.TCPServerOption) (addr s
 			}
 			return protocol.Error(rErr.Error())
 		}
-		switch strings.ToUpper(cmd) {
-		case "GET":
-			return protocol.BulkString(res)
-		case "SET", "DEL":
-			return protocol.SimpleString(res)
-		default:
-			return protocol.BulkString(res)
-		}
+		return res
 	})
 
 	addr = srv.Addr().String()
@@ -137,6 +131,49 @@ func TestClient_RoundTrip(t *testing.T) {
 	if got != framedValue {
 		t.Errorf("Get() framed value = %q, want %q", got, framedValue)
 	}
+}
+
+func TestClient_IntrospectionRoundTrip(t *testing.T) {
+	t.Parallel()
+	addr := startServer(t)
+	c, err := client.New(client.WithAddress(addr))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	ctx := t.Context()
+	for _, item := range []struct{ table, key string }{{"users", "z"}, {"orders", "id"}, {"users", "a"}} {
+		if err = c.Set(ctx, item.table, item.key, "v"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := mustTables(t, c, ctx), []string{"orders", "users"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Tables() = %v, want %v", got, want)
+	}
+	keys, kErr := c.Keys(ctx, "users")
+	if kErr != nil || !reflect.DeepEqual(keys, []string{"a", "z"}) {
+		t.Fatalf("Keys() = %v, %v", keys, kErr)
+	}
+	exists, eErr := c.TableExists(ctx, "orders")
+	if eErr != nil || !exists {
+		t.Fatalf("TableExists() = %v, %v", exists, eErr)
+	}
+	if err = c.Del(ctx, "orders", "id"); err != nil {
+		t.Fatal(err)
+	}
+	exists, eErr = c.TableExists(ctx, "orders")
+	if eErr != nil || exists {
+		t.Fatalf("TableExists() after Del = %v, %v", exists, eErr)
+	}
+}
+
+func mustTables(t *testing.T, c *client.Client, ctx context.Context) []string {
+	t.Helper()
+	values, err := c.Tables(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return values
 }
 
 func TestClient_Raw_RoundTrip(t *testing.T) {

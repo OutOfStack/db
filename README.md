@@ -59,6 +59,26 @@ Example:
 DEL users name
 ```
 
+### TABLES
+List all tables in sorted order:
+```
+TABLES
+```
+
+### EXISTS
+Report whether a table currently contains any keys:
+```
+EXISTS <table>
+```
+
+### KEYS
+List all keys in a table in sorted order. A missing table returns an empty
+list. List responses are subject to the configured client and server message
+size limits; pagination is not currently supported.
+```
+KEYS <table>
+```
+
 ## Configuration
 
 ### Server Configuration
@@ -232,6 +252,9 @@ Available commands:
   SET table key value
   GET table key
   DEL table key
+  TABLES
+  EXISTS table
+  KEYS table
 Type 'exit' to quit
 
 > SET users name Alice

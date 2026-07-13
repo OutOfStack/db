@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 )
 
@@ -20,6 +21,42 @@ var (
 type Engine struct {
 	store map[string]map[string]string
 	mu    sync.RWMutex
+}
+
+// Tables returns all table names in sorted order.
+func (e *Engine) Tables(_ context.Context) []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	tables := make([]string, 0, len(e.store))
+	for table := range e.store {
+		tables = append(tables, table)
+	}
+	sort.Strings(tables)
+	return tables
+}
+
+// TableExists reports whether a table currently contains at least one key.
+func (e *Engine) TableExists(_ context.Context, table string) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	_, ok := e.store[table]
+	return ok
+}
+
+// Keys returns all keys in table in sorted order.
+func (e *Engine) Keys(_ context.Context, table string) []string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	t := e.store[table]
+	keys := make([]string, 0, len(t))
+	for key := range t {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // New creates a new Engine instance
