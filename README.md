@@ -25,7 +25,8 @@ The project consists of three main components:
 
 ## Commands
 
-All commands use a simple text-based protocol. Every key belongs to a table:
+Commands are entered in the CLI using the simple syntax below and sent to the
+server as RESP2 frames (see [Network Protocol](#network-protocol)). Every key belongs to a table:
 tables are created implicitly on the first `SET` and removed automatically when
 their last key is deleted.
 
@@ -362,11 +363,24 @@ make generate
 
 ## Network Protocol
 
-The server uses a simple text-based protocol over TCP:
-- Commands are sent as plain text (same format as CLI)
-- Responses are terminated with newlines
-- Successful operations return "OK" or the requested value
-- Errors are prefixed with "ERROR: "
+The server speaks a RESP2-style protocol over TCP (the same framing used by
+Redis). The CLI accepts the human-friendly command syntax shown above and
+encodes it into RESP on the wire.
+
+- **Requests** are sent as a RESP array of bulk strings, one element per token.
+  For example, `SET users name Alice` is encoded as:
+  ```
+  *4\r\n$3\r\nSET\r\n$5\r\nusers\r\n$4\r\nname\r\n$5\r\nAlice\r\n
+  ```
+- **Responses** use standard RESP2 reply types, each terminated with `\r\n`:
+  - Simple strings (`+OK\r\n`) for successful writes
+  - Bulk strings (`$5\r\nAlice\r\n`) for values, and the null bulk string
+    (`$-1\r\n`) for a missing key
+  - Arrays (`*<n>\r\n…`) for list replies such as `TABLES` and `KEYS`
+  - Integers (`:<n>\r\n`)
+  - Errors (`-ERR <message>\r\n`)
+- Messages are bounded by the configured `max_message_size`; oversized requests
+  are rejected.
 
 ## Error Handling
 
