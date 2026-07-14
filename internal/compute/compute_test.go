@@ -8,6 +8,7 @@ import (
 
 	"github.com/OutOfStack/db/internal/compute"
 	mocks "github.com/OutOfStack/db/internal/compute/mocks"
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
@@ -23,7 +24,7 @@ func TestHandleRequest_Success(t *testing.T) {
 
 	cmd := "echo"
 	args := []string{"hello"}
-	result := "hello"
+	result := protocol.BulkString("hello")
 
 	mockParser.EXPECT().Parse(cmd, args).Return(cmd, args, nil)
 	mockStorage.EXPECT().Execute(gomock.Any(), cmd, args).Return(result, nil)
@@ -80,7 +81,7 @@ func TestHandleRequest_StorageError(t *testing.T) {
 	storageErr := errors.New("storage failed")
 
 	mockParser.EXPECT().Parse(cmd, args).Return(cmd, args, nil)
-	mockStorage.EXPECT().Execute(gomock.Any(), cmd, args).Return("", storageErr)
+	mockStorage.EXPECT().Execute(gomock.Any(), cmd, args).Return(protocol.Reply{}, storageErr)
 
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))

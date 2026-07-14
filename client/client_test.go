@@ -153,6 +153,49 @@ func TestClient_Del(t *testing.T) {
 	}
 }
 
+func TestClient_Introspection(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tables", func(t *testing.T) {
+		t.Parallel()
+		ft := &fakeTransport{resp: protocol.BulkStringArray([]string{"orders", "users"})}
+		got, err := client.NewWithTransport(ft).Tables(t.Context())
+		if err != nil || !reflect.DeepEqual(got, []string{"orders", "users"}) {
+			t.Fatalf("Tables() = %v, %v", got, err)
+		}
+	})
+	t.Run("empty keys", func(t *testing.T) {
+		t.Parallel()
+		got, err := client.NewWithTransport(&fakeTransport{resp: protocol.BulkStringArray(nil)}).Keys(t.Context(), "missing")
+		if err != nil || got == nil || len(got) != 0 {
+			t.Fatalf("Keys() = %#v, %v; want non-nil empty slice", got, err)
+		}
+	})
+	t.Run("malformed list", func(t *testing.T) {
+		t.Parallel()
+		_, err := client.NewWithTransport(&fakeTransport{resp: protocol.Array([]protocol.Reply{protocol.Integer(1)})}).Tables(t.Context())
+		if _, ok := errors.AsType[*client.ServerError](err); !ok {
+			t.Fatalf("Tables() error = %v, want ServerError", err)
+		}
+	})
+	for _, value := range []string{"true", "false"} {
+		t.Run("exists "+value, func(t *testing.T) {
+			t.Parallel()
+			got, err := client.NewWithTransport(&fakeTransport{resp: protocol.BulkString(value)}).TableExists(t.Context(), "users")
+			if err != nil || got != (value == "true") {
+				t.Fatalf("TableExists() = %v, %v", got, err)
+			}
+		})
+	}
+	t.Run("malformed exists", func(t *testing.T) {
+		t.Parallel()
+		_, err := client.NewWithTransport(&fakeTransport{resp: protocol.BulkString("yes")}).TableExists(t.Context(), "users")
+		if _, ok := errors.AsType[*client.ServerError](err); !ok {
+			t.Fatalf("TableExists() error = %v, want ServerError", err)
+		}
+	})
+}
+
 func TestClient_Raw(t *testing.T) {
 	t.Parallel()
 

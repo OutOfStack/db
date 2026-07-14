@@ -4,6 +4,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/storage"
 	mocks "github.com/OutOfStack/db/internal/storage/mocks"
 	"github.com/stretchr/testify/assert"
@@ -36,7 +37,7 @@ func TestStorage_Execute(t *testing.T) {
 
 		result, err := s.Execute(ctx, "SET", []string{table, key, value})
 		require.NoError(t, err)
-		assert.Equal(t, "OK", result)
+		assert.Equal(t, protocol.SimpleString("OK"), result)
 	})
 
 	t.Run("GET command", func(t *testing.T) {
@@ -53,7 +54,7 @@ func TestStorage_Execute(t *testing.T) {
 
 		result, err := s.Execute(ctx, "GET", []string{table, key})
 		require.NoError(t, err)
-		assert.Equal(t, value, result)
+		assert.Equal(t, protocol.BulkString(value), result)
 	})
 
 	t.Run("DEL command", func(t *testing.T) {
@@ -69,7 +70,37 @@ func TestStorage_Execute(t *testing.T) {
 
 		result, err := s.Execute(ctx, "DEL", []string{table, key})
 		require.NoError(t, err)
-		assert.Equal(t, "OK", result)
+		assert.Equal(t, protocol.SimpleString("OK"), result)
+	})
+
+	t.Run("TABLES command", func(t *testing.T) {
+		t.Parallel()
+		s, mockEngine := newStorageWithMock(t)
+		ctx := t.Context()
+		mockEngine.EXPECT().Tables(ctx).Return([]string{"orders", "users"})
+		result, err := s.Execute(ctx, "TABLES", nil)
+		require.NoError(t, err)
+		assert.Equal(t, protocol.BulkStringArray([]string{"orders", "users"}), result)
+	})
+
+	t.Run("EXISTS command", func(t *testing.T) {
+		t.Parallel()
+		s, mockEngine := newStorageWithMock(t)
+		ctx := t.Context()
+		mockEngine.EXPECT().TableExists(ctx, "users").Return(true)
+		result, err := s.Execute(ctx, "EXISTS", []string{"users"})
+		require.NoError(t, err)
+		assert.Equal(t, protocol.BulkString("true"), result)
+	})
+
+	t.Run("KEYS command", func(t *testing.T) {
+		t.Parallel()
+		s, mockEngine := newStorageWithMock(t)
+		ctx := t.Context()
+		mockEngine.EXPECT().Keys(ctx, "users").Return([]string{"a", "z"})
+		result, err := s.Execute(ctx, "KEYS", []string{"users"})
+		require.NoError(t, err)
+		assert.Equal(t, protocol.BulkStringArray([]string{"a", "z"}), result)
 	})
 
 	t.Run("invalid command", func(t *testing.T) {
@@ -80,36 +111,6 @@ func TestStorage_Execute(t *testing.T) {
 		result, err := s.Execute(t.Context(), "INVALID", []string{"table", "key"})
 		require.NoError(t, err)
 		assert.Empty(t, result)
-	})
-
-	t.Run("not enough args for SET", func(t *testing.T) {
-		t.Parallel()
-
-		s, _ := newStorageWithMock(t)
-
-		_, err := s.Execute(t.Context(), "SET", []string{"table", "key"})
-		require.Error(t, err)
-		assert.Equal(t, "not enough args", err.Error())
-	})
-
-	t.Run("not enough args for GET", func(t *testing.T) {
-		t.Parallel()
-
-		s, _ := newStorageWithMock(t)
-
-		_, err := s.Execute(t.Context(), "GET", []string{"table"})
-		require.Error(t, err)
-		assert.Equal(t, "not enough args", err.Error())
-	})
-
-	t.Run("not enough args for DEL", func(t *testing.T) {
-		t.Parallel()
-
-		s, _ := newStorageWithMock(t)
-
-		_, err := s.Execute(t.Context(), "DEL", []string{})
-		require.Error(t, err)
-		assert.Equal(t, "not enough args", err.Error())
 	})
 
 	t.Run("engine error on SET", func(t *testing.T) {

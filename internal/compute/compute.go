@@ -5,12 +5,13 @@ import (
 	"errors"
 	"log/slog"
 
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/storage"
 )
 
 // Storage is an interface for a storage layer
 type Storage interface {
-	Execute(ctx context.Context, cmd string, args []string) (string, error)
+	Execute(ctx context.Context, cmd string, args []string) (protocol.Reply, error)
 }
 
 // Parser is an interface for a parser
@@ -31,11 +32,11 @@ func New(parser Parser, storage Storage, logger *slog.Logger) *Compute {
 }
 
 // HandleRequest validates and executes a decoded request.
-func (c *Compute) HandleRequest(ctx context.Context, cmd string, args []string) (string, error) {
+func (c *Compute) HandleRequest(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
 	cmd, args, err := c.parser.Parse(cmd, args)
 	if err != nil {
 		c.logger.Error("Parse error", "error", err)
-		return "", err
+		return protocol.Reply{}, err
 	}
 
 	c.logger.Info("Parsed command", "cmd", cmd, "args", args)
@@ -47,7 +48,7 @@ func (c *Compute) HandleRequest(ctx context.Context, cmd string, args []string) 
 		} else {
 			c.logger.Error("Storage execution error", "error", err)
 		}
-		return "", err
+		return protocol.Reply{}, err
 	}
 
 	return result, nil

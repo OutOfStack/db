@@ -2,14 +2,34 @@ package parser
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 )
 
 // maxTableNameLen is the maximum allowed length of a table name
 const maxTableNameLen = 128
 
+const commandTables = "TABLES"
+
 // Parser implements a parser for a simple key-value store
 type Parser struct{}
+
+type commandSpec struct {
+	args     int
+	readOnly bool
+	usage    string
+}
+
+// commands is the central command registry used for validation and future
+// read/write routing.
+var commands = map[string]commandSpec{ //nolint:gochecknoglobals // a single registry is intentional
+	"SET":         {args: 3, readOnly: false, usage: "SET <table> <key> <value>"},
+	"GET":         {args: 2, readOnly: true, usage: "GET <table> <key>"},
+	"DEL":         {args: 2, readOnly: false, usage: "DEL <table> <key>"},
+	commandTables: {args: 0, readOnly: true, usage: commandTables},
+	"EXISTS":      {args: 1, readOnly: true, usage: "EXISTS <table>"},
+	"KEYS":        {args: 1, readOnly: true, usage: "KEYS <table>"},
+}
 
 // New creates a new Parser instance.
 func New() *Parser {
@@ -23,24 +43,25 @@ func (p *Parser) Parse(cmd string, args []string) (string, []string, error) {
 		return "", nil, errors.New("empty input")
 	}
 
-	switch cmd {
-	case "SET":
-		if len(args) != 3 {
-			return "", nil, errors.New("SET requires 3 arguments: SET <table> <key> <value>")
-		}
-	case "GET", "DEL":
-		if len(args) != 2 {
-			return "", nil, errors.New(cmd + " requires 2 arguments: " + cmd + " <table> <key>")
-		}
-	default:
+	spec, ok := commands[cmd]
+	if !ok {
 		return "", nil, errors.New("unknown command: " + cmd)
 	}
+	if len(args) != spec.args {
+		return "", nil, fmt.Errorf("%s requires %d arguments: %s", cmd, spec.args, spec.usage)
+	}
 
+	if spec.args == 0 {
+		return cmd, args, nil
+	}
 	if len(args[0]) > maxTableNameLen {
 		return "", nil, errors.New("table name too long")
 	}
-	if args[0] == "" || args[1] == "" {
-		return "", nil, errors.New("table and key cannot be empty")
+	if args[0] == "" {
+		return "", nil, errors.New("table cannot be empty")
+	}
+	if spec.args >= 2 && args[1] == "" {
+		return "", nil, errors.New("key cannot be empty")
 	}
 
 	return cmd, args, nil

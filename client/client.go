@@ -154,6 +154,72 @@ func (c *Client) Del(ctx context.Context, table, key string) error {
 	}
 }
 
+// Tables returns all table names in sorted order.
+func (c *Client) Tables(ctx context.Context) ([]string, error) {
+	resp, err := c.send(ctx, "TABLES", nil)
+	if err != nil {
+		return nil, err
+	}
+	return stringArray(resp)
+}
+
+// TableExists reports whether table currently contains at least one key.
+func (c *Client) TableExists(ctx context.Context, table string) (bool, error) {
+	if err := validateArgs(table); err != nil {
+		return false, err
+	}
+
+	resp, err := c.send(ctx, "EXISTS", []string{table})
+	if err != nil {
+		return false, err
+	}
+	if resp.Kind == protocol.ReplyError {
+		return false, &ServerError{Msg: resp.Value}
+	}
+	if resp.Kind != protocol.ReplyBulkString && resp.Kind != protocol.ReplySimpleString {
+		return false, &ServerError{Msg: replyText(resp)}
+	}
+	switch resp.Value {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	default:
+		return false, &ServerError{Msg: "invalid EXISTS response: " + resp.Value}
+	}
+}
+
+// Keys returns all keys in table in sorted order. A missing table returns an
+// empty slice. The response is subject to the configured message-size limit.
+func (c *Client) Keys(ctx context.Context, table string) ([]string, error) {
+	if err := validateArgs(table); err != nil {
+		return nil, err
+	}
+
+	resp, err := c.send(ctx, "KEYS", []string{table})
+	if err != nil {
+		return nil, err
+	}
+	return stringArray(resp)
+}
+
+func stringArray(resp protocol.Reply) ([]string, error) {
+	if resp.Kind == protocol.ReplyError {
+		return nil, &ServerError{Msg: resp.Value}
+	}
+	if resp.Kind != protocol.ReplyArray {
+		return nil, &ServerError{Msg: replyText(resp)}
+	}
+	values := make([]string, 0, len(resp.Array))
+	for _, item := range resp.Array {
+		if item.Kind != protocol.ReplyBulkString && item.Kind != protocol.ReplySimpleString {
+			return nil, &ServerError{Msg: "invalid list response"}
+		}
+		values = append(values, item.Value)
+	}
+	return values, nil
+}
+
 // Raw sends a raw command line to the server and returns the response text
 // as is, without error mapping. It gives access to commands that have no
 // typed wrapper yet.

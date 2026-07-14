@@ -2,11 +2,44 @@ package engine_test
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
 	"testing"
 
 	"github.com/OutOfStack/db/internal/engine"
 )
+
+func TestEngine_Introspection(t *testing.T) {
+	t.Parallel()
+
+	eng := engine.New()
+	if got := eng.Tables(t.Context()); len(got) != 0 {
+		t.Fatalf("Tables() = %v, want empty", got)
+	}
+	if eng.TableExists(t.Context(), "users") {
+		t.Fatal("TableExists(users) = true before Set")
+	}
+	for _, item := range []struct{ table, key string }{{"users", "z"}, {"orders", "id"}, {"users", "a"}} {
+		if err := eng.Set(t.Context(), item.table, item.key, "v"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, want := eng.Tables(t.Context()), []string{"orders", "users"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Tables() = %v, want %v", got, want)
+	}
+	if got, want := eng.Keys(t.Context(), "users"), []string{"a", "z"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("Keys(users) = %v, want %v", got, want)
+	}
+	if got := eng.Keys(t.Context(), "missing"); len(got) != 0 {
+		t.Errorf("Keys(missing) = %v, want empty", got)
+	}
+	if err := eng.Del(t.Context(), "orders", "id"); err != nil {
+		t.Fatal(err)
+	}
+	if eng.TableExists(t.Context(), "orders") {
+		t.Fatal("TableExists(orders) = true after deleting last key")
+	}
+}
 
 func TestEngine_Set(t *testing.T) {
 	t.Parallel()
@@ -177,6 +210,9 @@ func TestEngine_ConcurrentAccess(t *testing.T) {
 		go func() {
 			table := fmt.Sprintf("table-%d", i%3)
 			for j := range numOps {
+				_ = eng.Tables(t.Context())
+				_ = eng.TableExists(t.Context(), table)
+				_ = eng.Keys(t.Context(), table)
 				key := fmt.Sprintf("key-%d-%d", i, j)
 				value := fmt.Sprintf("value-%d-%d", i, j)
 

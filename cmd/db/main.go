@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/OutOfStack/db/internal/compute"
@@ -82,14 +81,7 @@ func main() {
 			}
 			return protocol.Error(rErr.Error())
 		}
-		switch strings.ToUpper(cmd) {
-		case "GET":
-			return protocol.BulkString(res)
-		case "SET", "DEL":
-			return protocol.SimpleString(res)
-		default:
-			return protocol.BulkString(res)
-		}
+		return res
 	})
 
 	sigChan := make(chan os.Signal, 1)
