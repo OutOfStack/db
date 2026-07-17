@@ -59,6 +59,26 @@ func BulkStringArray(values []string) Reply {
 	return Array(replies)
 }
 
+// CommandSize returns the exact number of bytes WriteCommand emits for cmd/args.
+// It lets callers reject an over-limit command before writing it, matching the
+// cumulative-byte limit ReadCommand enforces on the way back in.
+func CommandSize(cmd string, args []string) int {
+	size := 1 + intWidth(len(args)+1) + 2 // *<count>\r\n
+	size += bulkStringSize(cmd)
+	for _, arg := range args {
+		size += bulkStringSize(arg)
+	}
+	return size
+}
+
+func bulkStringSize(value string) int {
+	return 1 + intWidth(len(value)) + 2 + len(value) + 2 // $<len>\r\n<value>\r\n
+}
+
+func intWidth(n int) int {
+	return len(strconv.Itoa(n))
+}
+
 func WriteCommand(w io.Writer, cmd string, args []string) error {
 	if _, err := fmt.Fprintf(w, "*%d\r\n", len(args)+1); err != nil {
 		return err

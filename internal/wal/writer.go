@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/OutOfStack/db/internal/protocol"
 )
 
 // SyncPolicy controls when appended WAL records are fsynced.
@@ -122,6 +124,12 @@ func (w *Writer) Append(ctx context.Context, command string, args []string) (uin
 	}
 	if err := validateRecord(Record{Command: command, Args: args}); err != nil {
 		return 0, err
+	}
+	// Reject records the recovery reader could not decode (its RESP limit is
+	// maxRecordSize). The network layer's max message size is configurable and
+	// may exceed this, so guard here rather than persisting an unreadable record.
+	if size := protocol.CommandSize(command, args); size > maxRecordSize {
+		return 0, fmt.Errorf("WAL record size %d exceeds maximum %d bytes", size, maxRecordSize)
 	}
 	result := make(chan writerResult, 1)
 	request := writerRequest{kind: requestAppend, command: command, args: append([]string(nil), args...), result: result}
@@ -258,6 +266,7 @@ func (w *Writer) collectAppendBatch(first writerRequest) ([]writerRequest, *writ
 
 func (w *Writer) handleBatch(batch []writerRequest, state *writerState) {
 	results := make([]writerResult, len(batch))
+	wrote := false
 	for index, request := range batch {
 		if state.terminalErr != nil {
 			results[index].err = state.terminalErr
@@ -270,16 +279,21 @@ func (w *Writer) handleBatch(batch []writerRequest, state *writerState) {
 			continue
 		}
 		results[index].lsn = lsn
+		wrote = true
 	}
 
-	if state.terminalErr == nil && w.config.Sync == SyncAlways && state.file != nil {
+	// Sync whatever was written even when a later append in the batch failed:
+	// the earlier records are already on disk and will replay on restart, so
+	// their callers must be acked, not failed. Only a sync failure leaves those
+	// records non-durable, and only then do we fail the callers we would ack.
+	if wrote && w.config.Sync == SyncAlways && state.file != nil {
 		if err := state.file.Sync(); err != nil {
 			state.terminalErr = fmt.Errorf("sync WAL: %w", err)
-		}
-	}
-	if state.terminalErr != nil {
-		for index := range results {
-			results[index].err = state.terminalErr
+			for index := range results {
+				if results[index].err == nil {
+					results[index].err = state.terminalErr
+				}
+			}
 		}
 	}
 	for index, request := range batch {
@@ -315,6 +329,11 @@ func (w *Writer) ensureSegment(state *writerState, lsn uint64, recordSize int64)
 	if err := w.closeForRotation(state); err != nil {
 		return err
 	}
+	// The previous segment is closed and durably synced. Drop the handle so a
+	// failed open below cannot leave a stale, closed file that later code syncs
+	// (which would wrongly fail callers whose records are already durable).
+	state.file = nil
+	state.size = 0
 	path := filepath.Join(w.config.Dir, walFilename(lsn))
 	// #nosec G304 -- path is constrained to the configured directory and a generated numeric filename.
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)

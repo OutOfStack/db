@@ -23,6 +23,12 @@ import (
 )
 
 func main() {
+	os.Exit(execute())
+}
+
+// execute runs the server and returns a process exit code. It is separate from
+// main so deferred cleanup (e.g. closing the log file) runs before os.Exit.
+func execute() int {
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "Path to configuration file")
 	flag.Parse()
@@ -30,12 +36,12 @@ func main() {
 	cfg, err := config.LoadServerConfig(configPath)
 	if err != nil {
 		log.Printf("Failed to load configuration: %v\n", err)
-		return
+		return 1
 	}
 	logger, closeLog, err := newLogger(cfg.Logging)
 	if err != nil {
 		log.Printf("Failed to configure logging: %v\n", err)
-		return
+		return 1
 	}
 	defer func() {
 		if closeErr := closeLog(); closeErr != nil {
@@ -45,7 +51,9 @@ func main() {
 
 	if err = run(cfg, logger); err != nil {
 		logger.Error("Server stopped", "error", err)
+		return 1
 	}
+	return 0
 }
 
 func newLogger(cfg config.ServerLoggingConfig) (*slog.Logger, func() error, error) {

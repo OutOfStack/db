@@ -33,6 +33,30 @@ func TestCommandRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCommandSizeMatchesWriteCommand(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		cmd  string
+		args []string
+	}{
+		{"SET", []string{"users", "name", "vlad"}},
+		{"DEL", []string{"users", "name"}},
+		{"SET", []string{"t", "k", ""}},
+		{"SET", []string{"table", "key", "a value spanning multiple words and \r\n bytes"}},
+	}
+
+	for _, c := range cases {
+		var buf bytes.Buffer
+		if err := protocol.WriteCommand(&buf, c.cmd, c.args); err != nil {
+			t.Fatalf("WriteCommand() error = %v", err)
+		}
+		if got := protocol.CommandSize(c.cmd, c.args); got != buf.Len() {
+			t.Errorf("CommandSize(%q, %v) = %d, want %d", c.cmd, c.args, got, buf.Len())
+		}
+	}
+}
+
 func TestReadCommandRejectsMalformedFrames(t *testing.T) {
 	t.Parallel()
 
