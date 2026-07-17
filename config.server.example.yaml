@@ -4,6 +4,14 @@
 engine:
   type: "in_memory"
 
+# WAL is disabled by default for backward compatibility.
+wal:
+  enabled: false
+  data_dir: "data"
+  sync: "everysec"          # always, everysec, or no
+  segment_size: 64          # MiB
+  snapshot_interval: 5m
+
 network:
   address: "127.0.0.1:3223"
   max_connections: 100

@@ -41,6 +41,35 @@ func TestEngine_Introspection(t *testing.T) {
 	}
 }
 
+func TestEngine_LoadAndRange(t *testing.T) {
+	t.Parallel()
+	eng := engine.New()
+	eng.Load(t.Context(), []engine.Entry{
+		{Table: "users", Key: "a", Value: "one"},
+		{Table: "users", Key: "b", Value: "two"},
+		{Table: "orders", Key: "x", Value: "three"},
+	})
+
+	got := make(map[string]string)
+	eng.Range(func(table, key, value string) bool {
+		got[table+"/"+key] = value
+		return true
+	})
+	want := map[string]string{"users/a": "one", "users/b": "two", "orders/x": "three"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Range() = %v, want %v", got, want)
+	}
+
+	count := 0
+	eng.Range(func(string, string, string) bool {
+		count++
+		return false
+	})
+	if count != 1 {
+		t.Fatalf("early-stop Range() calls = %d, want 1", count)
+	}
+}
+
 func TestEngine_Set(t *testing.T) {
 	t.Parallel()
 

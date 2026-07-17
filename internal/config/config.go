@@ -66,7 +66,7 @@ func LoadServerConfig(filename string) (*ServerConfig, error) {
 			return nil, err
 		}
 		if data != nil {
-			var fileCfg ServerConfig
+			fileCfg := *DefaultServerConfig()
 			if err = yaml.Unmarshal(data, &fileCfg); err != nil {
 				return nil, fmt.Errorf("failed to parse config file: %w", err)
 			}

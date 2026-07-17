@@ -23,6 +23,13 @@ type Engine struct {
 	mu    sync.RWMutex
 }
 
+// Entry is one value used by the recovery bulk-load path.
+type Entry struct {
+	Table string
+	Key   string
+	Value string
+}
+
 // Tables returns all table names in sorted order.
 func (e *Engine) Tables(_ context.Context) []string {
 	e.mu.RLock()
@@ -64,6 +71,36 @@ func New() *Engine {
 	return &Engine{
 		store: make(map[string]map[string]string),
 		mu:    sync.RWMutex{},
+	}
+}
+
+// Range calls fn for every stored value while holding a read lock. Iteration
+// stops when fn returns false.
+func (e *Engine) Range(fn func(table, key, value string) bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for table, values := range e.store {
+		for key, value := range values {
+			if !fn(table, key, value) {
+				return
+			}
+		}
+	}
+}
+
+// Load inserts a recovered set of entries without routing them through the WAL.
+func (e *Engine) Load(_ context.Context, entries []Entry) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	for _, entry := range entries {
+		table := e.store[entry.Table]
+		if table == nil {
+			table = make(map[string]string)
+			e.store[entry.Table] = table
+		}
+		table[entry.Key] = entry.Value
 	}
 }
 

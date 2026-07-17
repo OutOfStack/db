@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/OutOfStack/db/internal/compute"
 	"github.com/OutOfStack/db/internal/config"
@@ -17,6 +19,7 @@ import (
 	"github.com/OutOfStack/db/internal/parser"
 	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/storage"
+	"github.com/OutOfStack/db/internal/wal"
 )
 
 func main() {
@@ -26,12 +29,28 @@ func main() {
 
 	cfg, err := config.LoadServerConfig(configPath)
 	if err != nil {
-		log.Fatalf("Failed to load configuration: %v\n", err)
+		log.Printf("Failed to load configuration: %v\n", err)
+		return
 	}
+	logger, closeLog, err := newLogger(cfg.Logging)
+	if err != nil {
+		log.Printf("Failed to configure logging: %v\n", err)
+		return
+	}
+	defer func() {
+		if closeErr := closeLog(); closeErr != nil {
+			log.Printf("Failed to close log file: %v", closeErr)
+		}
+	}()
 
-	var logger *slog.Logger
+	if err = run(cfg, logger); err != nil {
+		logger.Error("Server stopped", "error", err)
+	}
+}
+
+func newLogger(cfg config.ServerLoggingConfig) (*slog.Logger, func() error, error) {
 	level := slog.LevelInfo
-	switch cfg.Logging.Level {
+	switch cfg.Level {
 	case "debug":
 		level = slog.LevelDebug
 	case "warn":
@@ -39,54 +58,186 @@ func main() {
 	case "error":
 		level = slog.LevelError
 	}
-
 	opts := &slog.HandlerOptions{Level: level}
-	logger = slog.New(slog.NewJSONHandler(os.Stdout, opts))
-	if cfg.Logging.Output != "" {
-		file, fErr := os.OpenFile(cfg.Logging.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
-		if fErr != nil {
-			logger.Error("Failed to open log file", "error", fErr)
-			os.Exit(1)
-		}
-		defer func() {
-			if fErr = file.Close(); fErr != nil {
-				logger.Error("Failed to close log file", "error", fErr)
-			}
-		}()
-		logger = slog.New(slog.NewJSONHandler(file, opts))
+	if cfg.Output == "" {
+		return slog.New(slog.NewJSONHandler(os.Stdout, opts)), func() error { return nil }, nil
+	}
+	file, err := os.OpenFile(cfg.Output, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, nil, err
+	}
+	return slog.New(slog.NewJSONHandler(file, opts)), file.Close, nil
+}
+
+func run(cfg *config.ServerConfig, logger *slog.Logger) error {
+	dbEngine, walWriter, snapshotLSN, err := recoverPersistence(cfg, logger)
+	if err != nil {
+		return err
+	}
+	if walWriter != nil {
+		defer func() { _ = walWriter.Close() }() // the coordinated shutdown below reports the first close error
 	}
 
-	store := storage.New(engine.New())
+	var options []storage.Option
+	if walWriter != nil {
+		options = append(options, storage.WithWAL(walWriter))
+	}
+	store := storage.New(dbEngine, options...)
 	comp := compute.New(parser.New(), store, logger)
+	return serve(cfg, logger, comp, store, walWriter, snapshotLSN)
+}
 
+func recoverPersistence(
+	cfg *config.ServerConfig,
+	logger *slog.Logger,
+) (*engine.Engine, *wal.Writer, uint64, error) {
+	dbEngine := engine.New()
+	if !cfg.WAL.Enabled {
+		return dbEngine, nil, 0, nil
+	}
+
+	var entries []engine.Entry
+	snapshotLSN, err := wal.LoadLatestSnapshot(cfg.WAL.DataDir, func(table, key, value string) error {
+		entries = append(entries, engine.Entry{Table: table, Key: key, Value: value})
+		return nil
+	})
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("load snapshot: %w", err)
+	}
+	dbEngine.Load(context.Background(), entries)
+
+	lastLSN, err := wal.NewReader(cfg.WAL.DataDir, logger).Replay(snapshotLSN, func(record wal.Record) error {
+		return applyRecoveredRecord(dbEngine, record)
+	})
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("replay WAL: %w", err)
+	}
+	writer, err := wal.OpenWriter(wal.WriterConfig{
+		Dir:         cfg.WAL.DataDir,
+		Sync:        cfg.WAL.Sync,
+		SegmentSize: cfg.WAL.SegmentSizeMB << 20,
+	}, lastLSN)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("open WAL: %w", err)
+	}
+	logger.Info("Persistence recovered", "snapshot_lsn", snapshotLSN, "last_lsn", lastLSN)
+	return dbEngine, writer, snapshotLSN, nil
+}
+
+func applyRecoveredRecord(dbEngine *engine.Engine, record wal.Record) error {
+	switch record.Command {
+	case wal.CommandSet:
+		return dbEngine.Set(context.Background(), record.Args[0], record.Args[1], record.Args[2])
+	case wal.CommandDel:
+		err := dbEngine.Del(context.Background(), record.Args[0], record.Args[1])
+		if errors.Is(err, engine.ErrNotFound) {
+			return nil
+		}
+		return err
+	default:
+		return fmt.Errorf("unsupported WAL command %q", record.Command)
+	}
+}
+
+func serve(
+	cfg *config.ServerConfig,
+	logger *slog.Logger,
+	comp *compute.Compute,
+	store *storage.Storage,
+	walWriter *wal.Writer,
+	recoveredSnapshotLSN uint64,
+) error {
 	srv, err := network.NewTCPServer(cfg.Network.Address, logger,
 		network.WithServerIdleTimeout(cfg.Network.IdleTimeout),
 		network.WithServerMaxMessageSize(cfg.Network.MaxMessageSizeKB*1024),
 		network.WithServerMaxConnections(cfg.Network.MaxConnections))
 	if err != nil {
-		logger.Error("Failed to create server", "error", err)
-		return
+		return err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		srv.Start(ctx, requestHandler(comp))
+	}()
+	snapshotDone := startSnapshotLoop(ctx, cfg, logger, store, walWriter, recoveredSnapshotLSN)
 
 	logger.Info("Server started", "address", cfg.Network.Address)
-
-	go srv.Start(ctx, func(ctx context.Context, cmd string, args []string) protocol.Reply {
-		res, rErr := comp.HandleRequest(ctx, cmd, args)
-		if rErr != nil {
-			if errors.Is(rErr, storage.ErrNotFound) {
-				return protocol.NullBulkString()
-			}
-			return protocol.Error(rErr.Error())
-		}
-		return res
-	})
-
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(sigChan)
 	<-sigChan
 
 	logger.Info("Shutting down server...")
+	cancel()
+	<-serverDone
+	<-snapshotDone
+	if walWriter != nil {
+		if err = walWriter.Close(); err != nil {
+			return fmt.Errorf("close WAL: %w", err)
+		}
+	}
+	return nil
+}
+
+func requestHandler(comp *compute.Compute) network.RequestHandler {
+	return func(ctx context.Context, cmd string, args []string) protocol.Reply {
+		result, err := comp.HandleRequest(ctx, cmd, args)
+		if err == nil {
+			return result
+		}
+		if errors.Is(err, storage.ErrNotFound) {
+			return protocol.NullBulkString()
+		}
+		return protocol.Error(err.Error())
+	}
+}
+
+func startSnapshotLoop(
+	ctx context.Context,
+	cfg *config.ServerConfig,
+	logger *slog.Logger,
+	store *storage.Storage,
+	writer *wal.Writer,
+	lastSnapshotLSN uint64,
+) <-chan struct{} {
+	done := make(chan struct{})
+	if writer == nil {
+		close(done)
+		return done
+	}
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(cfg.WAL.SnapshotInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if writer.LastLSN() == lastSnapshotLSN {
+					continue
+				}
+				writtenLSN, err := createSnapshot(ctx, cfg.WAL.DataDir, store)
+				if err != nil {
+					logger.Error("Failed to write snapshot", "error", err)
+					continue
+				}
+				lastSnapshotLSN = writtenLSN
+				logger.Info("Snapshot written", "lsn", writtenLSN)
+			}
+		}
+	}()
+	return done
+}
+
+func createSnapshot(ctx context.Context, dir string, store *storage.Storage) (uint64, error) {
+	var writtenLSN uint64
+	err := store.Snapshot(ctx, func(ctx context.Context, lsn uint64, source storage.SnapshotSource) error {
+		writtenLSN = lsn
+		return wal.WriteSnapshot(ctx, dir, lsn, source)
+	})
+	return writtenLSN, err
 }

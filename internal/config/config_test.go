@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/OutOfStack/db/internal/config"
+	"github.com/OutOfStack/db/internal/wal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,6 +37,12 @@ network:
 logging:
   level: "debug"
   output: "/tmp/test.log"
+wal:
+  enabled: true
+  data_dir: "test-data"
+  sync: "always"
+  segment_size: 8
+  snapshot_interval: 30s
 `
 		tmpFile, err := os.CreateTemp(".", "config_test_*.yaml")
 		require.NoError(t, err)
@@ -56,6 +63,11 @@ logging:
 		assert.Equal(t, "debug", cfg.Logging.Level)
 		assert.Equal(t, "/tmp/test.log", cfg.Logging.Output)
 		assert.Equal(t, "in_memory", cfg.Engine.Type)
+		assert.True(t, cfg.WAL.Enabled)
+		assert.Equal(t, "test-data", cfg.WAL.DataDir)
+		assert.Equal(t, wal.SyncAlways, cfg.WAL.Sync)
+		assert.Equal(t, int64(8), cfg.WAL.SegmentSizeMB)
+		assert.Equal(t, 30*time.Second, cfg.WAL.SnapshotInterval)
 	})
 
 	t.Run("returns error for invalid config values", func(t *testing.T) {
@@ -81,6 +93,32 @@ network:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid config: maxConnections must be positive")
 	})
+}
+
+func TestServerWALConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		change func(*config.ServerConfig)
+		want   string
+	}{
+		{"missing data directory", func(cfg *config.ServerConfig) { cfg.WAL.DataDir = "" }, "wal dataDir"},
+		{"bad sync policy", func(cfg *config.ServerConfig) { cfg.WAL.Sync = "sometimes" }, "wal sync policy"},
+		{"bad segment size", func(cfg *config.ServerConfig) { cfg.WAL.SegmentSizeMB = 0 }, "wal segmentSize"},
+		{"bad snapshot interval", func(cfg *config.ServerConfig) { cfg.WAL.SnapshotInterval = 0 }, "wal snapshotInterval"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.DefaultServerConfig()
+			cfg.WAL.Enabled = true
+			test.change(cfg)
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.want)
+		})
+	}
 }
 
 func TestLoadServerConfig_EnvOverrides(t *testing.T) { //nolint:paralleltest // t.Setenv

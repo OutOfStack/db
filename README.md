@@ -89,6 +89,12 @@ The server can be configured using a YAML file. Example configuration:
 ```yaml
 engine:
   type: "in_memory"
+wal:
+  enabled: true
+  data_dir: "data"
+  sync: "everysec"
+  segment_size: 64
+  snapshot_interval: 5m
 network:
   address: "127.0.0.1:3223"
   max_connections: 100
@@ -102,6 +108,11 @@ logging:
 #### Server Configuration Options
 
 - **engine.type**: Storage engine type (currently only "in_memory")
+- **wal.enabled**: Enable durable write-ahead logging (disabled by default)
+- **wal.data_dir**: Directory for WAL segments and snapshots
+- **wal.sync**: Fsync policy (`always`, `everysec`, or `no`)
+- **wal.segment_size**: WAL segment rollover size in MiB
+- **wal.snapshot_interval**: Interval between snapshots when data has changed
 - **network.address**: Server listening address
 - **network.max_connections**: Maximum concurrent client connections (enforced by server)
 - **network.max_message_size**: Maximum message size in KB
@@ -336,7 +347,8 @@ go build -o bin/db-cli ./cmd/db-cli
     ├── network/                 # TCP networking layer
     ├── parser/                  # Command parsing
     ├── pool/                    # Connection pooling and failover
-    └── storage/                 # Storage layer
+    ├── storage/                 # Storage layer
+    └── wal/                     # Write-ahead log and snapshots
 ```
 
 ## Development
