@@ -83,6 +83,18 @@ func (mr *MockEngineMockRecorder) Keys(ctx, table any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Keys", reflect.TypeOf((*MockEngine)(nil).Keys), ctx, table)
 }
 
+// Range mocks base method.
+func (m *MockEngine) Range(fn func(table, key, value string) bool) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "Range", fn)
+}
+
+// Range indicates an expected call of Range.
+func (mr *MockEngineMockRecorder) Range(fn any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Range", reflect.TypeOf((*MockEngine)(nil).Range), fn)
+}
+
 // Set mocks base method.
 func (m *MockEngine) Set(ctx context.Context, table, key, value string) error {
 	m.ctrl.T.Helper()

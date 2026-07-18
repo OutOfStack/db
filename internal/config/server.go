@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/OutOfStack/db/internal/engine"
+	"github.com/OutOfStack/db/internal/wal"
 )
 
 // Environment variables that override server configuration values
@@ -23,8 +24,19 @@ const (
 // ServerConfig - configuration for the database server
 type ServerConfig struct {
 	Engine  ServerEngineConfig  `yaml:"engine"`
+	WAL     ServerWALConfig     `yaml:"wal"`
 	Network ServerNetworkConfig `yaml:"network"`
 	Logging ServerLoggingConfig `yaml:"logging"`
+}
+
+// ServerWALConfig controls durable write-ahead logging and snapshots.
+// SegmentSizeMB is measured in MiB.
+type ServerWALConfig struct {
+	Enabled          bool           `yaml:"enabled"`
+	DataDir          string         `yaml:"data_dir"`
+	Sync             wal.SyncPolicy `yaml:"sync"`
+	SegmentSizeMB    int64          `yaml:"segment_size"`
+	SnapshotInterval time.Duration  `yaml:"snapshot_interval"`
 }
 
 // ServerEngineConfig holds configuration for the database engine.
@@ -55,6 +67,13 @@ func DefaultServerConfig() *ServerConfig {
 	return &ServerConfig{
 		Engine: ServerEngineConfig{
 			Type: engine.TypeInMemory,
+		},
+		WAL: ServerWALConfig{
+			Enabled:          false,
+			DataDir:          "data",
+			Sync:             wal.SyncEverySec,
+			SegmentSizeMB:    64,
+			SnapshotInterval: 5 * time.Minute,
 		},
 		Network: ServerNetworkConfig{
 			Address:          defaultAddress,
@@ -125,6 +144,23 @@ func (c *ServerConfig) Validate() error {
 
 	if c.Network.IdleTimeout <= 0 {
 		return errors.New("idleTimeout must be positive")
+	}
+
+	if c.WAL.Enabled {
+		if c.WAL.DataDir == "" {
+			return errors.New("wal dataDir cannot be empty")
+		}
+		switch c.WAL.Sync {
+		case wal.SyncAlways, wal.SyncEverySec, wal.SyncNo:
+		default:
+			return fmt.Errorf("unsupported wal sync policy: %s", c.WAL.Sync)
+		}
+		if c.WAL.SegmentSizeMB <= 0 {
+			return errors.New("wal segmentSize must be positive")
+		}
+		if c.WAL.SnapshotInterval <= 0 {
+			return errors.New("wal snapshotInterval must be positive")
+		}
 	}
 
 	return nil
