@@ -4,14 +4,20 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	"github.com/OutOfStack/db/internal/engine"
 	"github.com/OutOfStack/db/internal/protocol"
+	"github.com/OutOfStack/db/internal/wal"
 )
 
 var (
 	// ErrNotFound is the error returned when a key is not found
 	ErrNotFound = errors.New("not found")
+	// ErrReadOnly is returned for mutating commands on a replication standby.
+	// It maps to the "ERR readonly" wire reply so a pool client can re-route
+	// the write to a master.
+	ErrReadOnly = errors.New("readonly")
 )
 
 // Engine is an interface for a storage engine
@@ -23,11 +29,17 @@ type Engine interface {
 	TableExists(ctx context.Context, table string) bool
 	Keys(ctx context.Context, table string) []string
 	Range(fn func(table, key, value string) bool)
+	// Replace atomically swaps all state for a resync snapshot on a standby.
+	Replace(entries []engine.Entry)
 }
 
 // WAL is the persistence stream used for mutating commands.
 type WAL interface {
 	Append(ctx context.Context, command string, args []string) (uint64, error)
+	// AppendRecord persists a record with a caller-assigned LSN (replication).
+	AppendRecord(ctx context.Context, record wal.Record) error
+	// Reset discards all segments and sets LastLSN to lsn (snapshot resync).
+	Reset(ctx context.Context, lsn uint64) error
 	LastLSN() uint64
 	Prune(ctx context.Context, uptoLSN uint64) error
 }
@@ -45,14 +57,22 @@ func WithWAL(log WAL) Option {
 	return func(storage *Storage) { storage.wal = log }
 }
 
+// WithReadOnly starts the storage in read-only mode, rejecting SET/DEL with
+// ErrReadOnly. Replication standbys use it; Promote lifts it.
+func WithReadOnly(readOnly bool) Option {
+	return func(storage *Storage) { storage.readOnly.Store(readOnly) }
+}
+
 // Storage implements a storage layer that provides a simple key-value store
 type Storage struct {
 	engine Engine
 	wal    WAL
 	// mu serializes snapshots (write lock) against mutations (read lock); many
 	// mutations may run concurrently so their WAL appends can be group-committed.
-	mu   sync.RWMutex
-	gate *applyGate
+	// It also serializes Promote's gate swap against in-flight mutations.
+	mu       sync.RWMutex
+	gate     *applyGate
+	readOnly atomic.Bool
 }
 
 // New returns a new Storage instance
@@ -196,6 +216,9 @@ func (s *Storage) del(ctx context.Context, args []string) (protocol.Reply, error
 // enabled, appends run concurrently (under the shared read lock) so the writer can
 // group-commit them, while the apply gate replays them into the engine in LSN order.
 func (s *Storage) mutate(ctx context.Context, command string, args []string, apply func() error) error {
+	if s.readOnly.Load() {
+		return ErrReadOnly
+	}
 	if s.wal == nil {
 		return apply()
 	}
@@ -208,6 +231,80 @@ func (s *Storage) mutate(ctx context.Context, command string, args []string, app
 		return err
 	}
 	return s.gate.run(lsn, apply)
+}
+
+// ReadOnly reports whether mutating commands are currently rejected.
+func (s *Storage) ReadOnly() bool { return s.readOnly.Load() }
+
+// Promote lifts read-only mode so the storage accepts writes. It resets the
+// apply gate to the WAL's current tail, because replication advanced LastLSN
+// past the value captured when the storage was created. Client writes are still
+// rejected while the gate is swapped, so no mutation observes a stale gate.
+func (s *Storage) Promote() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.wal != nil {
+		s.gate = newApplyGate(s.wal.LastLSN() + 1)
+	}
+	s.readOnly.Store(false)
+}
+
+// ApplyReplicated persists a record streamed from a master and applies it to the
+// engine. It holds the shared read lock so a concurrent Snapshot cannot capture
+// a state whose LSN is ahead of the engine (which would drop the record on
+// recovery). It bypasses the apply gate: a single master stream is already
+// ordered by LSN.
+func (s *Storage) ApplyReplicated(ctx context.Context, record wal.Record) error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if err := s.wal.AppendRecord(ctx, record); err != nil {
+		return err
+	}
+	switch record.Command {
+	case wal.CommandSet:
+		return s.engine.Set(ctx, record.Args[0], record.Args[1], record.Args[2])
+	case wal.CommandDel:
+		if err := s.engine.Del(ctx, record.Args[0], record.Args[1]); err != nil && !errors.Is(err, engine.ErrNotFound) {
+			return err
+		}
+		return nil
+	default:
+		return errors.New("unsupported replicated command: " + record.Command)
+	}
+}
+
+// ResetToSnapshot replaces all state with a snapshot received during resync: it
+// persists the snapshot, resets the WAL to lsn, and reloads the engine, all
+// under the exclusive lock so it is atomic against Snapshot.
+func (s *Storage) ResetToSnapshot(ctx context.Context, dir string, lsn uint64, entries []engine.Entry) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Reset the WAL before publishing the snapshot. If we crash between the two,
+	// recovery falls back to the previous snapshot plus an empty WAL and re-syncs
+	// — safe. The reverse order would leave a high-LSN snapshot alongside old
+	// low-LSN segments, so the reopened writer appends a non-contiguous tail that
+	// recovery refuses.
+	if err := s.wal.Reset(ctx, lsn); err != nil {
+		return err
+	}
+	if err := wal.WriteSnapshot(ctx, dir, lsn, entrySource(entries)); err != nil {
+		return err
+	}
+	s.engine.Replace(entries)
+	return nil
+}
+
+// entrySource adapts recovered entries to the wal.SnapshotSource interface.
+type entrySource []engine.Entry
+
+func (e entrySource) Range(fn func(table, key, value string) bool) {
+	for _, entry := range e {
+		if !fn(entry.Table, entry.Key, entry.Value) {
+			return
+		}
+	}
 }
 
 func fmtBool(value bool) string {

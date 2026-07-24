@@ -12,6 +12,7 @@ import (
 	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/storage"
 	mocks "github.com/OutOfStack/db/internal/storage/mocks"
+	"github.com/OutOfStack/db/internal/wal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -33,6 +34,13 @@ type fakeWAL struct {
 
 func (f *fakeWAL) Append(ctx context.Context, command string, args []string) (uint64, error) {
 	return f.append(ctx, command, args)
+}
+
+func (f *fakeWAL) AppendRecord(context.Context, wal.Record) error { return nil }
+
+func (f *fakeWAL) Reset(_ context.Context, lsn uint64) error {
+	f.last = lsn
+	return nil
 }
 
 func (f *fakeWAL) LastLSN() uint64 { return f.last }
@@ -287,4 +295,43 @@ func TestStorage_Execute(t *testing.T) {
 		assert.Equal(t, expectedErr, err)
 		assert.Empty(t, result)
 	})
+}
+
+func TestStorage_ReadOnly(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	mockEngine := mocks.NewMockEngine(gomock.NewController(t))
+	store := storage.New(mockEngine, storage.WithReadOnly(true))
+
+	_, err := store.Execute(ctx, "SET", []string{"t", "k", "v"})
+	require.ErrorIs(t, err, storage.ErrReadOnly)
+	_, err = store.Execute(ctx, "DEL", []string{"t", "k"})
+	require.ErrorIs(t, err, storage.ErrReadOnly)
+
+	// Reads are unaffected by read-only mode.
+	mockEngine.EXPECT().Get(ctx, "t", "k").Return("v", nil)
+	res, err := store.Execute(ctx, "GET", []string{"t", "k"})
+	require.NoError(t, err)
+	assert.Equal(t, "v", res.Value)
+}
+
+func TestStorage_Promote(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	mockEngine := mocks.NewMockEngine(gomock.NewController(t))
+	// Replication advanced the WAL to LSN 5 while the standby was read-only; the
+	// gate must reset to 6 on promotion so the first client write applies.
+	log := &fakeWAL{last: 5, append: func(context.Context, string, []string) (uint64, error) { return 6, nil }}
+	store := storage.New(mockEngine, storage.WithWAL(log), storage.WithReadOnly(true))
+
+	_, err := store.Execute(ctx, "SET", []string{"t", "k", "v"})
+	require.ErrorIs(t, err, storage.ErrReadOnly)
+
+	store.Promote()
+	require.False(t, store.ReadOnly())
+
+	mockEngine.EXPECT().Set(ctx, "t", "k", "v").Return(nil)
+	res, err := store.Execute(ctx, "SET", []string{"t", "k", "v"})
+	require.NoError(t, err)
+	assert.Equal(t, "OK", res.Value)
 }

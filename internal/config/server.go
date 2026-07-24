@@ -21,12 +21,31 @@ const (
 	envLogOutput      = "DB_LOG_OUTPUT"
 )
 
+// Replication roles.
+const (
+	RoleStandalone = ""
+	RoleMaster     = "master"
+	RoleStandby    = "standby"
+)
+
 // ServerConfig - configuration for the database server
 type ServerConfig struct {
-	Engine  ServerEngineConfig  `yaml:"engine"`
-	WAL     ServerWALConfig     `yaml:"wal"`
-	Network ServerNetworkConfig `yaml:"network"`
-	Logging ServerLoggingConfig `yaml:"logging"`
+	Engine      ServerEngineConfig      `yaml:"engine"`
+	WAL         ServerWALConfig         `yaml:"wal"`
+	Replication ServerReplicationConfig `yaml:"replication"`
+	Network     ServerNetworkConfig     `yaml:"network"`
+	Logging     ServerLoggingConfig     `yaml:"logging"`
+}
+
+// ServerReplicationConfig controls master/standby log shipping. Role is
+// "master", "standby", or empty (standalone). A master streams its WAL to
+// standbys that connect to ListenAddress; a standby connects to MasterAddress.
+// Replication requires WAL persistence to be enabled.
+type ServerReplicationConfig struct {
+	Role             string        `yaml:"role"`
+	ListenAddress    string        `yaml:"listen_address"`
+	MasterAddress    string        `yaml:"master_address"`
+	ReconnectBackoff time.Duration `yaml:"reconnect_backoff"`
 }
 
 // ServerWALConfig controls durable write-ahead logging and snapshots.
@@ -74,6 +93,10 @@ func DefaultServerConfig() *ServerConfig {
 			Sync:             wal.SyncEverySec,
 			SegmentSizeMB:    64,
 			SnapshotInterval: 5 * time.Minute,
+		},
+		Replication: ServerReplicationConfig{
+			Role:             RoleStandalone,
+			ReconnectBackoff: time.Second,
 		},
 		Network: ServerNetworkConfig{
 			Address:          defaultAddress,
@@ -163,5 +186,31 @@ func (c *ServerConfig) Validate() error {
 		}
 	}
 
+	return c.Replication.validate(c.WAL.Enabled)
+}
+
+// validate checks replication settings. Replication requires WAL persistence,
+// since the WAL is the replication stream.
+func (r *ServerReplicationConfig) validate(walEnabled bool) error {
+	switch r.Role {
+	case RoleStandalone:
+		return nil
+	case RoleMaster:
+		if r.ListenAddress == "" {
+			return errors.New("replication master requires listen_address")
+		}
+	case RoleStandby:
+		if r.MasterAddress == "" {
+			return errors.New("replication standby requires master_address")
+		}
+		if r.ReconnectBackoff <= 0 {
+			return errors.New("replication reconnect_backoff must be positive")
+		}
+	default:
+		return fmt.Errorf("unsupported replication role: %s", r.Role)
+	}
+	if !walEnabled {
+		return errors.New("replication requires wal.enabled")
+	}
 	return nil
 }

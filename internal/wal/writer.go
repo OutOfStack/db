@@ -37,7 +37,9 @@ type requestKind uint8
 
 const (
 	requestAppend requestKind = iota
+	requestAppendReplicated
 	requestPrune
+	requestReset
 	requestClose
 )
 
@@ -45,8 +47,19 @@ type writerRequest struct {
 	kind    requestKind
 	command string
 	args    []string
+	record  Record // used by requestAppendReplicated, which carries an explicit LSN
 	uptoLSN uint64
 	result  chan writerResult
+}
+
+// subscriberBuffer bounds how many committed records the writer can queue for a
+// single replication subscriber before dropping. A dropped record is not lost:
+// the master streaming loop detects the LSN gap and re-reads it from the WAL
+// segments on disk, so a slow standby never blocks the writer goroutine.
+const subscriberBuffer = 1024
+
+type subscriber struct {
+	ch chan Record
 }
 
 type writerResult struct {
@@ -66,6 +79,9 @@ type Writer struct {
 	lastLSN   atomic.Uint64
 	closeOnce sync.Once
 	closeErr  error
+
+	subsMu sync.RWMutex
+	subs   map[*subscriber]struct{}
 }
 
 // OpenWriter opens a writer after recovery. lastLSN must be the last LSN
@@ -111,6 +127,7 @@ func OpenWriter(config WriterConfig, lastLSN uint64) (*Writer, error) {
 		size:     size,
 		requests: make(chan writerRequest, 256),
 		done:     make(chan struct{}),
+		subs:     make(map[*subscriber]struct{}),
 	}
 	writer.lastLSN.Store(lastLSN)
 	go writer.run()
@@ -156,6 +173,58 @@ func (w *Writer) Append(ctx context.Context, command string, args []string) (uin
 	}
 }
 
+// AppendRecord writes a record with a caller-assigned LSN. Standbys use it to
+// persist records received from the master's replication stream, preserving the
+// master's LSNs so a promoted standby continues the same log. The record's LSN
+// must be exactly the current LastLSN+1.
+func (w *Writer) AppendRecord(ctx context.Context, record Record) error {
+	if w.closing.Load() {
+		return ErrClosed
+	}
+	if err := validateRecord(record); err != nil {
+		return err
+	}
+	if size := protocol.CommandSize(record.Command, record.Args); size > maxRecordSize {
+		return fmt.Errorf("WAL record size %d exceeds maximum %d bytes", size, maxRecordSize)
+	}
+	return w.control(ctx, writerRequest{kind: requestAppendReplicated, record: record})
+}
+
+// Reset discards all WAL segments and sets LastLSN to lsn, so the next appended
+// record must be lsn+1. Standbys call it after loading a snapshot at lsn during
+// resync, when their existing log is entirely superseded by the snapshot.
+func (w *Writer) Reset(ctx context.Context, lsn uint64) error {
+	return w.control(ctx, writerRequest{kind: requestReset, uptoLSN: lsn})
+}
+
+// Subscribe registers for committed records. The returned channel receives every
+// record the writer commits after the call; the returned function unsubscribes.
+// Sends are non-blocking (see subscriberBuffer): a subscriber that cannot keep up
+// misses records and must recover them by reading segments from disk.
+func (w *Writer) Subscribe() (<-chan Record, func()) {
+	sub := &subscriber{ch: make(chan Record, subscriberBuffer)}
+	w.subsMu.Lock()
+	w.subs[sub] = struct{}{}
+	w.subsMu.Unlock()
+	return sub.ch, func() {
+		w.subsMu.Lock()
+		delete(w.subs, sub)
+		w.subsMu.Unlock()
+	}
+}
+
+// publish delivers a committed record to every subscriber without blocking.
+func (w *Writer) publish(record Record) {
+	w.subsMu.RLock()
+	defer w.subsMu.RUnlock()
+	for sub := range w.subs {
+		select {
+		case sub.ch <- record:
+		default:
+		}
+	}
+}
+
 // LastLSN returns the most recently written LSN.
 func (w *Writer) LastLSN() uint64 { return w.lastLSN.Load() }
 
@@ -192,13 +261,21 @@ func (w *Writer) control(ctx context.Context, request writerRequest) error {
 	case <-w.done:
 		return ErrClosed
 	}
+	// Once enqueued, wait for the outcome regardless of ctx cancellation: the
+	// writer will still process this request and mutate durable state (assign an
+	// LSN, remove segments), so abandoning it here would desync a caller that
+	// applies records in LSN order — e.g. a standby whose context is cancelled by
+	// Stop() mid-append, leaving its engine one record behind its own WAL.
 	select {
 	case response := <-request.result:
 		return response.err
-	case <-ctx.Done():
-		return ctx.Err()
 	case <-w.done:
-		return ErrClosed
+		select {
+		case response := <-request.result:
+			return response.err
+		default:
+			return ErrClosed
+		}
 	}
 }
 
@@ -299,6 +376,14 @@ func (w *Writer) handleBatch(batch []writerRequest, state *writerState) {
 	for index, request := range batch {
 		request.result <- results[index]
 	}
+
+	// Publish only records the callers were acked for; a failed append or sync
+	// leaves the record non-durable, so it must not be streamed to standbys.
+	for index, request := range batch {
+		if results[index].err == nil {
+			w.publish(Record{LSN: results[index].lsn, Command: request.command, Args: request.args})
+		}
+	}
 }
 
 func (w *Writer) appendOne(request writerRequest, state *writerState) (uint64, error) {
@@ -320,6 +405,67 @@ func (w *Writer) appendOne(request writerRequest, state *writerState) (uint64, e
 	}
 	w.lastLSN.Store(lsn)
 	return lsn, nil
+}
+
+// appendReplicated writes a record with its own LSN, enforcing contiguity with
+// the current tail. Under a durable sync policy it fsyncs before returning so an
+// acked replicated record survives a standby crash, mirroring Append.
+func (w *Writer) appendReplicated(record Record, state *writerState) error {
+	expected := w.lastLSN.Load() + 1
+	if record.LSN != expected {
+		return fmt.Errorf("non-contiguous replicated LSN: got %d, want %d", record.LSN, expected)
+	}
+	encoded, err := encodeRecord(record)
+	if err != nil {
+		return err
+	}
+	if err = w.ensureSegment(state, record.LSN, int64(len(encoded))); err != nil {
+		return err
+	}
+	written, err := state.file.Write(encoded)
+	state.size += int64(written)
+	if err != nil {
+		state.terminalErr = fmt.Errorf("append replicated WAL record: %w", err)
+		return state.terminalErr
+	}
+	if written != len(encoded) {
+		state.terminalErr = fmt.Errorf("append replicated WAL record: %w", io.ErrShortWrite)
+		return state.terminalErr
+	}
+	if w.config.Sync != SyncNo && state.file != nil {
+		if err = state.file.Sync(); err != nil {
+			state.terminalErr = fmt.Errorf("sync WAL: %w", err)
+			return state.terminalErr
+		}
+	}
+	w.lastLSN.Store(record.LSN)
+	return nil
+}
+
+// reset removes every WAL segment and sets LastLSN to lsn, so the next record
+// appended must be lsn+1 into a fresh segment.
+func (w *Writer) reset(state *writerState, lsn uint64) error {
+	if state.file != nil {
+		if err := state.file.Close(); err != nil {
+			return fmt.Errorf("close WAL before reset: %w", err)
+		}
+		state.file = nil
+		state.size = 0
+	}
+	segments, err := listNumberedFiles(w.config.Dir, walPrefix, walSuffix)
+	if err != nil {
+		return fmt.Errorf("list WAL segments for reset: %w", err)
+	}
+	for _, segment := range segments {
+		if err = os.Remove(segment.path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove WAL segment during reset: %w", err)
+		}
+	}
+	if err = syncDirectory(w.config.Dir); err != nil {
+		return fmt.Errorf("sync WAL directory during reset: %w", err)
+	}
+	w.lastLSN.Store(lsn)
+	return nil
 }
 
 func (w *Writer) ensureSegment(state *writerState, lsn uint64, recordSize int64) error {
@@ -368,6 +514,23 @@ func (w *Writer) closeForRotation(state *writerState) error {
 
 func (w *Writer) handleControl(request writerRequest, state *writerState) bool {
 	switch request.kind {
+	case requestAppendReplicated:
+		err := state.terminalErr
+		if err == nil {
+			err = w.appendReplicated(request.record, state)
+		}
+		request.result <- writerResult{err: err}
+		if err == nil {
+			w.publish(request.record)
+		}
+		return false
+	case requestReset:
+		err := state.terminalErr
+		if err == nil {
+			err = w.reset(state, request.uptoLSN)
+		}
+		request.result <- writerResult{err: err}
+		return false
 	case requestPrune:
 		err := state.terminalErr
 		if err == nil {
@@ -376,23 +539,27 @@ func (w *Writer) handleControl(request writerRequest, state *writerState) bool {
 		request.result <- writerResult{err: err}
 		return false
 	case requestClose:
-		err := state.terminalErr
-		if state.file != nil {
-			if syncErr := state.file.Sync(); err == nil && syncErr != nil {
-				err = fmt.Errorf("sync WAL during close: %w", syncErr)
-			}
-			if closeErr := state.file.Close(); err == nil && closeErr != nil {
-				err = fmt.Errorf("close WAL: %w", closeErr)
-			}
-		}
-		if syncErr := w.syncAllSegments(); err == nil && syncErr != nil {
-			err = syncErr
-		}
-		request.result <- writerResult{err: err}
+		request.result <- writerResult{err: w.handleClose(state)}
 		return true
 	default:
 		return false
 	}
+}
+
+func (w *Writer) handleClose(state *writerState) error {
+	err := state.terminalErr
+	if state.file != nil {
+		if syncErr := state.file.Sync(); err == nil && syncErr != nil {
+			err = fmt.Errorf("sync WAL during close: %w", syncErr)
+		}
+		if closeErr := state.file.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("close WAL: %w", closeErr)
+		}
+	}
+	if syncErr := w.syncAllSegments(); err == nil && syncErr != nil {
+		err = syncErr
+	}
+	return err
 }
 
 func (w *Writer) syncAllSegments() error {

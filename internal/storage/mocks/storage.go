@@ -13,6 +13,8 @@ import (
 	context "context"
 	reflect "reflect"
 
+	engine "github.com/OutOfStack/db/internal/engine"
+	wal "github.com/OutOfStack/db/internal/wal"
 	gomock "go.uber.org/mock/gomock"
 )
 
@@ -84,7 +86,7 @@ func (mr *MockEngineMockRecorder) Keys(ctx, table any) *gomock.Call {
 }
 
 // Range mocks base method.
-func (m *MockEngine) Range(fn func(table, key, value string) bool) {
+func (m *MockEngine) Range(fn func(string, string, string) bool) {
 	m.ctrl.T.Helper()
 	m.ctrl.Call(m, "Range", fn)
 }
@@ -93,6 +95,18 @@ func (m *MockEngine) Range(fn func(table, key, value string) bool) {
 func (mr *MockEngineMockRecorder) Range(fn any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Range", reflect.TypeOf((*MockEngine)(nil).Range), fn)
+}
+
+// Replace mocks base method.
+func (m *MockEngine) Replace(entries []engine.Entry) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "Replace", entries)
+}
+
+// Replace indicates an expected call of Replace.
+func (mr *MockEngineMockRecorder) Replace(entries any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Replace", reflect.TypeOf((*MockEngine)(nil).Replace), entries)
 }
 
 // Set mocks base method.
@@ -135,4 +149,135 @@ func (m *MockEngine) Tables(ctx context.Context) []string {
 func (mr *MockEngineMockRecorder) Tables(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tables", reflect.TypeOf((*MockEngine)(nil).Tables), ctx)
+}
+
+// MockWAL is a mock of WAL interface.
+type MockWAL struct {
+	ctrl     *gomock.Controller
+	recorder *MockWALMockRecorder
+	isgomock struct{}
+}
+
+// MockWALMockRecorder is the mock recorder for MockWAL.
+type MockWALMockRecorder struct {
+	mock *MockWAL
+}
+
+// NewMockWAL creates a new mock instance.
+func NewMockWAL(ctrl *gomock.Controller) *MockWAL {
+	mock := &MockWAL{ctrl: ctrl}
+	mock.recorder = &MockWALMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockWAL) EXPECT() *MockWALMockRecorder {
+	return m.recorder
+}
+
+// Append mocks base method.
+func (m *MockWAL) Append(ctx context.Context, command string, args []string) (uint64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Append", ctx, command, args)
+	ret0, _ := ret[0].(uint64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Append indicates an expected call of Append.
+func (mr *MockWALMockRecorder) Append(ctx, command, args any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Append", reflect.TypeOf((*MockWAL)(nil).Append), ctx, command, args)
+}
+
+// AppendRecord mocks base method.
+func (m *MockWAL) AppendRecord(ctx context.Context, record wal.Record) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "AppendRecord", ctx, record)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// AppendRecord indicates an expected call of AppendRecord.
+func (mr *MockWALMockRecorder) AppendRecord(ctx, record any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "AppendRecord", reflect.TypeOf((*MockWAL)(nil).AppendRecord), ctx, record)
+}
+
+// LastLSN mocks base method.
+func (m *MockWAL) LastLSN() uint64 {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "LastLSN")
+	ret0, _ := ret[0].(uint64)
+	return ret0
+}
+
+// LastLSN indicates an expected call of LastLSN.
+func (mr *MockWALMockRecorder) LastLSN() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "LastLSN", reflect.TypeOf((*MockWAL)(nil).LastLSN))
+}
+
+// Prune mocks base method.
+func (m *MockWAL) Prune(ctx context.Context, uptoLSN uint64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Prune", ctx, uptoLSN)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Prune indicates an expected call of Prune.
+func (mr *MockWALMockRecorder) Prune(ctx, uptoLSN any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Prune", reflect.TypeOf((*MockWAL)(nil).Prune), ctx, uptoLSN)
+}
+
+// Reset mocks base method.
+func (m *MockWAL) Reset(ctx context.Context, lsn uint64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Reset", ctx, lsn)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Reset indicates an expected call of Reset.
+func (mr *MockWALMockRecorder) Reset(ctx, lsn any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Reset", reflect.TypeOf((*MockWAL)(nil).Reset), ctx, lsn)
+}
+
+// MockSnapshotSource is a mock of SnapshotSource interface.
+type MockSnapshotSource struct {
+	ctrl     *gomock.Controller
+	recorder *MockSnapshotSourceMockRecorder
+	isgomock struct{}
+}
+
+// MockSnapshotSourceMockRecorder is the mock recorder for MockSnapshotSource.
+type MockSnapshotSourceMockRecorder struct {
+	mock *MockSnapshotSource
+}
+
+// NewMockSnapshotSource creates a new mock instance.
+func NewMockSnapshotSource(ctrl *gomock.Controller) *MockSnapshotSource {
+	mock := &MockSnapshotSource{ctrl: ctrl}
+	mock.recorder = &MockSnapshotSourceMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockSnapshotSource) EXPECT() *MockSnapshotSourceMockRecorder {
+	return m.recorder
+}
+
+// Range mocks base method.
+func (m *MockSnapshotSource) Range(fn func(string, string, string) bool) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "Range", fn)
+}
+
+// Range indicates an expected call of Range.
+func (mr *MockSnapshotSourceMockRecorder) Range(fn any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Range", reflect.TypeOf((*MockSnapshotSource)(nil).Range), fn)
 }

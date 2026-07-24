@@ -3,12 +3,18 @@ package pool
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/protocol"
 )
+
+// readOnlyReply is the error value a standby returns for a mutating command
+// (wire "-ERR readonly", decoded with the "ERR " prefix stripped). It signals
+// that the selected server is not actually a writable master.
+const readOnlyReply = "readonly"
 
 // syncedConnection wraps a TCPClient with a mutex to serialize Send() calls
 type syncedConnection struct {
@@ -53,22 +59,20 @@ func NewClient(config *PoolConfig, options ...network.TCPClientOption) (*Client,
 	}, nil
 }
 
-// Send sends a command using the pool, with automatic failover
+// Send sends a command using the pool, with automatic failover. Writes (SET,
+// DEL) route to a master; reads follow the configured strategy. A standby that
+// replies "ERR readonly" to a write marks the routing stale, so the pool fails
+// that server over and retries against another master.
 func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
+	write := isWriteCommand(cmd)
 	var lastErr error
 	attempts := 0
 	maxAttempts := c.config.MaxRetries + 1 // initial attempt + retries
 
 	for attempts < maxAttempts {
-		// Select a server
-		server := c.selector.Select()
+		server := c.selectServer(write)
 		if server == nil {
-			// No servers available, reset and try one more time
-			c.selector.Reset()
-			server = c.selector.Select()
-			if server == nil {
-				return protocol.Reply{}, errors.New("no servers available in pool")
-			}
+			return protocol.Reply{}, noServersError(write)
 		}
 
 		// Get or create connection
@@ -97,6 +101,18 @@ func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
 			continue
 		}
 
+		// A write that reached a read-only server means our master routing is
+		// stale (the server was demoted); fail it over and retry elsewhere.
+		if write && isReadOnlyReply(resp) {
+			c.selector.MarkFailed(server.Address)
+			lastErr = fmt.Errorf("server %s is read-only", server.Address)
+			attempts++
+			if attempts < maxAttempts {
+				time.Sleep(c.config.RetryDelay)
+			}
+			continue
+		}
+
 		// Success!
 		return resp, nil
 	}
@@ -105,6 +121,46 @@ func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
 		return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts: %w", attempts, lastErr)
 	}
 	return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts", attempts)
+}
+
+// selectServer picks a server for the command, resetting the selector once if
+// all candidates are currently marked failed.
+func (c *Client) selectServer(write bool) *ServerConfig {
+	server := c.pick(write)
+	if server == nil {
+		c.selector.Reset()
+		server = c.pick(write)
+	}
+	return server
+}
+
+func (c *Client) pick(write bool) *ServerConfig {
+	if write {
+		return c.selector.SelectWrite()
+	}
+	return c.selector.SelectRead()
+}
+
+func noServersError(write bool) error {
+	if write {
+		return errors.New("no master servers available in pool")
+	}
+	return errors.New("no servers available in pool")
+}
+
+// isWriteCommand reports whether cmd mutates state and must route to a master.
+func isWriteCommand(cmd string) bool {
+	switch strings.ToUpper(strings.TrimSpace(cmd)) {
+	case "SET", "DEL":
+		return true
+	default:
+		return false
+	}
+}
+
+// isReadOnlyReply reports whether resp is a standby's "ERR readonly" response.
+func isReadOnlyReply(resp protocol.Reply) bool {
+	return resp.Kind == protocol.ReplyError && strings.EqualFold(resp.Value, readOnlyReply)
 }
 
 // getConnection gets or creates a connection to the specified address
