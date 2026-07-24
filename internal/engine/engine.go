@@ -102,7 +102,21 @@ func (e *Engine) Reset() {
 func (e *Engine) Load(_ context.Context, entries []Entry) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.load(entries)
+}
 
+// Replace atomically swaps all stored data for entries under a single lock, so a
+// concurrent reader never observes the empty intermediate state that separate
+// Reset + Load calls would expose. Used by snapshot resync on a serving standby.
+func (e *Engine) Replace(entries []Entry) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.store = make(map[string]map[string]string)
+	e.load(entries)
+}
+
+// load inserts entries into the current store. The caller holds e.mu.
+func (e *Engine) load(entries []Entry) {
 	for _, entry := range entries {
 		table := e.store[entry.Table]
 		if table == nil {

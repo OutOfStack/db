@@ -29,9 +29,8 @@ type Engine interface {
 	TableExists(ctx context.Context, table string) bool
 	Keys(ctx context.Context, table string) []string
 	Range(fn func(table, key, value string) bool)
-	// Reset and Load support snapshot resync on a replication standby.
-	Reset()
-	Load(ctx context.Context, entries []engine.Entry)
+	// Replace atomically swaps all state for a resync snapshot on a standby.
+	Replace(entries []engine.Entry)
 }
 
 // WAL is the persistence stream used for mutating commands.
@@ -282,14 +281,18 @@ func (s *Storage) ResetToSnapshot(ctx context.Context, dir string, lsn uint64, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := wal.WriteSnapshot(ctx, dir, lsn, entrySource(entries)); err != nil {
-		return err
-	}
+	// Reset the WAL before publishing the snapshot. If we crash between the two,
+	// recovery falls back to the previous snapshot plus an empty WAL and re-syncs
+	// — safe. The reverse order would leave a high-LSN snapshot alongside old
+	// low-LSN segments, so the reopened writer appends a non-contiguous tail that
+	// recovery refuses.
 	if err := s.wal.Reset(ctx, lsn); err != nil {
 		return err
 	}
-	s.engine.Reset()
-	s.engine.Load(ctx, entries)
+	if err := wal.WriteSnapshot(ctx, dir, lsn, entrySource(entries)); err != nil {
+		return err
+	}
+	s.engine.Replace(entries)
 	return nil
 }
 

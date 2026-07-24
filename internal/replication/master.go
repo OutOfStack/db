@@ -105,24 +105,28 @@ func (m *Master) stream(ctx context.Context, w *bufio.Writer, requestedLSN uint6
 	defer unsub()
 
 	nextLSN := requestedLSN + 1
-	oldest, err := wal.OldestRecordLSN(m.dir, m.writer.LastLSN()+1)
-	if err != nil {
-		return err
-	}
-	if nextLSN < oldest {
-		snapLSN, serr := m.sendSnapshot(w)
-		if serr != nil {
-			return serr
-		}
-		if snapLSN+1 > nextLSN {
-			nextLSN = snapLSN + 1
-		}
-	}
 
 	ticker := time.NewTicker(m.heartbeatInterval)
 	defer ticker.Stop()
 
 	for {
+		// Re-check retention every iteration: the snapshot loop may have pruned
+		// the records this standby still needs since the last pass, so a gap
+		// recovery must resync from a snapshot rather than ship a non-contiguous
+		// LSN that the standby would reject.
+		oldest, err := wal.OldestRecordLSN(m.dir, m.writer.LastLSN()+1)
+		if err != nil {
+			return err
+		}
+		if nextLSN < oldest {
+			snapLSN, serr := m.sendSnapshot(w)
+			if serr != nil {
+				return serr
+			}
+			if snapLSN+1 > nextLSN {
+				nextLSN = snapLSN + 1
+			}
+		}
 		if err = m.streamDisk(w, &nextLSN); err != nil {
 			return err
 		}

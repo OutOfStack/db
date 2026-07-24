@@ -85,18 +85,6 @@ func (mr *MockEngineMockRecorder) Keys(ctx, table any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Keys", reflect.TypeOf((*MockEngine)(nil).Keys), ctx, table)
 }
 
-// Load mocks base method.
-func (m *MockEngine) Load(ctx context.Context, entries []engine.Entry) {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "Load", ctx, entries)
-}
-
-// Load indicates an expected call of Load.
-func (mr *MockEngineMockRecorder) Load(ctx, entries any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Load", reflect.TypeOf((*MockEngine)(nil).Load), ctx, entries)
-}
-
 // Range mocks base method.
 func (m *MockEngine) Range(fn func(string, string, string) bool) {
 	m.ctrl.T.Helper()
@@ -109,16 +97,16 @@ func (mr *MockEngineMockRecorder) Range(fn any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Range", reflect.TypeOf((*MockEngine)(nil).Range), fn)
 }
 
-// Reset mocks base method.
-func (m *MockEngine) Reset() {
+// Replace mocks base method.
+func (m *MockEngine) Replace(entries []engine.Entry) {
 	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "Reset")
+	m.ctrl.Call(m, "Replace", entries)
 }
 
-// Reset indicates an expected call of Reset.
-func (mr *MockEngineMockRecorder) Reset() *gomock.Call {
+// Replace indicates an expected call of Replace.
+func (mr *MockEngineMockRecorder) Replace(entries any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Reset", reflect.TypeOf((*MockEngine)(nil).Reset))
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Replace", reflect.TypeOf((*MockEngine)(nil).Replace), entries)
 }
 
 // Set mocks base method.
