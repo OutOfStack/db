@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/OutOfStack/db/internal/wal"
 )
@@ -303,5 +304,64 @@ func TestSnapshotIgnoresTemporaryFiles(t *testing.T) {
 	lsn, err := wal.LoadLatestSnapshot(dir, func(string, string, string) error { return nil })
 	if err != nil || lsn != 0 {
 		t.Fatalf("LoadLatestSnapshot() = %d, %v; want 0, nil", lsn, err)
+	}
+}
+
+func TestSubscribePublishesCommittedRecords(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writer, err := wal.OpenWriter(wal.WriterConfig{Dir: dir, Sync: wal.SyncAlways, SegmentSize: 1 << 20}, 0)
+	if err != nil {
+		t.Fatalf("OpenWriter() error = %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	sub, unsub := writer.Subscribe()
+	defer unsub()
+
+	if _, err = writer.Append(t.Context(), wal.CommandSet, []string{"t", "k", "v"}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+
+	select {
+	case record := <-sub:
+		if record.LSN != 1 || record.Command != wal.CommandSet {
+			t.Fatalf("published record = %+v, want LSN 1 SET", record)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for published record")
+	}
+}
+
+func TestAppendRecordEnforcesContiguityAndReset(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writer, err := wal.OpenWriter(wal.WriterConfig{Dir: dir, Sync: wal.SyncAlways, SegmentSize: 1 << 20}, 0)
+	if err != nil {
+		t.Fatalf("OpenWriter() error = %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	// A standby persists records with the master's LSNs.
+	if err = writer.AppendRecord(t.Context(), wal.Record{LSN: 1, Command: wal.CommandSet, Args: []string{"t", "k", "v"}}); err != nil {
+		t.Fatalf("AppendRecord(1) error = %v", err)
+	}
+	// A gap is rejected.
+	if err = writer.AppendRecord(t.Context(), wal.Record{LSN: 3, Command: wal.CommandSet, Args: []string{"t", "k", "v"}}); err == nil {
+		t.Fatal("AppendRecord(3) after 1 should fail on the LSN gap")
+	}
+	if writer.LastLSN() != 1 {
+		t.Fatalf("LastLSN = %d, want 1", writer.LastLSN())
+	}
+
+	// Reset to a snapshot LSN, then continue from there.
+	if err = writer.Reset(t.Context(), 10); err != nil {
+		t.Fatalf("Reset() error = %v", err)
+	}
+	if writer.LastLSN() != 10 {
+		t.Fatalf("LastLSN after reset = %d, want 10", writer.LastLSN())
+	}
+	if err = writer.AppendRecord(t.Context(), wal.Record{LSN: 11, Command: wal.CommandSet, Args: []string{"t", "k2", "v2"}}); err != nil {
+		t.Fatalf("AppendRecord(11) after reset error = %v", err)
 	}
 }

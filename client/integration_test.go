@@ -380,7 +380,7 @@ func TestClient_Pool_Failover(t *testing.T) {
 
 	ctx := t.Context()
 
-	// master serves while alive
+	// master serves writes and reads while alive
 	if err = c.Set(ctx, "t", "key", "master-value"); err != nil {
 		t.Fatalf("Set() error = %v", err)
 	}
@@ -389,21 +389,44 @@ func TestClient_Pool_Failover(t *testing.T) {
 		t.Fatalf("Get() = %q, %v; want %q, nil", got, err, "master-value")
 	}
 
+	// Seed the standby directly (these in-process servers do not replicate) so a
+	// read that fails over to it returns an observably different value.
+	standby, err := client.New(client.WithAddress(standbyAddr))
+	if err != nil {
+		t.Fatalf("standby client New() error = %v", err)
+	}
+	defer standby.Close()
+	if err = standby.Set(ctx, "t", "key", "standby-value"); err != nil {
+		t.Fatalf("seed standby Set() error = %v", err)
+	}
+
 	stopMaster()
 
-	// after master death every operation must keep succeeding via the standby.
-	// The master's established connection may absorb at most one more request
-	// before it closes, so send two before asserting state
-	if err = c.Set(ctx, "t", "key", "standby-value"); err != nil {
-		t.Fatalf("Set() after master stop error = %v", err)
-	}
-	if err = c.Set(ctx, "t", "key", "standby-value"); err != nil {
-		t.Fatalf("second Set() after master stop error = %v", err)
+	// Reads fail over to the standby. The master's established connection may
+	// absorb at most one more request before it closes, so retry until failover.
+	if err = eventually(func() bool {
+		v, gErr := c.Get(ctx, "t", "key")
+		return gErr == nil && v == "standby-value"
+	}); err != nil {
+		t.Errorf("Get() did not fail over to standby: %v", err)
 	}
 
-	// servers do not replicate, so getting the new value proves the standby serves now
-	got, err = c.Get(ctx, "t", "key")
-	if err != nil || got != "standby-value" {
-		t.Errorf("Get() after failover = %q, %v; want %q, nil", got, err, "standby-value")
+	// Writes route only to masters, so with the master down they must fail rather
+	// than silently land on the read-only standby.
+	if err = eventually(func() bool {
+		return c.Set(ctx, "t", "key", "new-value") != nil
+	}); err != nil {
+		t.Errorf("Set() after master stop unexpectedly succeeded (writes must not hit standbys)")
 	}
+}
+
+// eventually retries cond for a short while, returning nil once it holds.
+func eventually(cond func() bool) error {
+	for range 50 {
+		if cond() {
+			return nil
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return errors.New("condition not met within timeout")
 }

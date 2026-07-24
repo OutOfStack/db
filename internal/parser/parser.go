@@ -9,7 +9,10 @@ import (
 // maxTableNameLen is the maximum allowed length of a table name
 const maxTableNameLen = 128
 
-const commandTables = "TABLES"
+const (
+	commandTables  = "TABLES"
+	commandPromote = "PROMOTE"
+)
 
 // Parser implements a parser for a simple key-value store
 type Parser struct{}
@@ -17,7 +20,10 @@ type Parser struct{}
 type commandSpec struct {
 	args     int
 	readOnly bool
-	usage    string
+	// admin marks a control-plane command (e.g. replication management) whose
+	// arguments are not table-scoped and so skip table/key validation.
+	admin bool
+	usage string
 }
 
 // commands is the central command registry used for validation and future
@@ -29,6 +35,8 @@ var commands = map[string]commandSpec{ //nolint:gochecknoglobals // a single reg
 	commandTables: {args: 0, readOnly: true, usage: commandTables},
 	"EXISTS":      {args: 1, readOnly: true, usage: "EXISTS <table>"},
 	"KEYS":        {args: 1, readOnly: true, usage: "KEYS <table>"},
+	commandPromote: {args: 0, readOnly: false, admin: true, usage: commandPromote},
+	"REPLICATION": {args: 1, readOnly: true, admin: true, usage: "REPLICATION STATUS"},
 }
 
 // New creates a new Parser instance.
@@ -51,7 +59,7 @@ func (p *Parser) Parse(cmd string, args []string) (string, []string, error) {
 		return "", nil, fmt.Errorf("%s requires %d arguments: %s", cmd, spec.args, spec.usage)
 	}
 
-	if spec.args == 0 {
+	if spec.args == 0 || spec.admin {
 		return cmd, args, nil
 	}
 	if len(args[0]) > maxTableNameLen {

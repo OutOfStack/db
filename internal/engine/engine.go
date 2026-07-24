@@ -89,6 +89,15 @@ func (e *Engine) Range(fn func(table, key, value string) bool) {
 	}
 }
 
+// Reset removes all stored data. A standby calls it during snapshot resync,
+// before loading the master's snapshot, since the snapshot fully replaces the
+// standby's superseded state.
+func (e *Engine) Reset() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.store = make(map[string]map[string]string)
+}
+
 // Load inserts a recovered set of entries without routing them through the WAL.
 func (e *Engine) Load(_ context.Context, entries []Entry) {
 	e.mu.Lock()
