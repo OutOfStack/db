@@ -121,6 +121,54 @@ func TestServerWALConfigValidation(t *testing.T) {
 	}
 }
 
+func TestServerReplicationConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		change func(*config.ServerConfig)
+		want   string
+	}{
+		{"master needs listen address", func(cfg *config.ServerConfig) {
+			cfg.Replication.Role = config.RoleMaster
+		}, "listen_address"},
+		{"standby needs master address", func(cfg *config.ServerConfig) {
+			cfg.Replication.Role = config.RoleStandby
+			cfg.Replication.ReconnectBackoff = time.Second
+		}, "master_address"},
+		{"unknown role", func(cfg *config.ServerConfig) {
+			cfg.Replication.Role = "arbiter"
+		}, "replication role"},
+		{"replication requires wal", func(cfg *config.ServerConfig) {
+			cfg.WAL.Enabled = false
+			cfg.Replication.Role = config.RoleMaster
+			cfg.Replication.ListenAddress = "127.0.0.1:3224"
+		}, "requires wal"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.DefaultServerConfig()
+			cfg.WAL.Enabled = true
+			cfg.WAL.DataDir = "data"
+			test.change(cfg)
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.want)
+		})
+	}
+}
+
+func TestServerReplicationConfigValid(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultServerConfig()
+	cfg.WAL.Enabled = true
+	cfg.Replication.Role = config.RoleStandby
+	cfg.Replication.MasterAddress = "127.0.0.1:3224"
+	cfg.Replication.ReconnectBackoff = time.Second
+	require.NoError(t, cfg.Validate())
+}
+
 func TestLoadServerConfig_EnvOverrides(t *testing.T) { //nolint:paralleltest // t.Setenv
 	t.Run("env overrides defaults", func(t *testing.T) {
 		t.Setenv("DB_ADDRESS", "0.0.0.0:9999")

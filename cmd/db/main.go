@@ -90,9 +90,24 @@ func run(cfg *config.ServerConfig, logger *slog.Logger) error {
 	if walWriter != nil {
 		options = append(options, storage.WithWAL(walWriter))
 	}
+	// A standby starts read-only: client writes are rejected until PROMOTE, while
+	// replication applies the master's log directly to the engine.
+	if cfg.Replication.Role == config.RoleStandby {
+		options = append(options, storage.WithReadOnly(true))
+	}
 	store := storage.New(dbEngine, options...)
-	comp := compute.New(parser.New(), store, logger)
-	return serve(cfg, logger, comp, store, walWriter, snapshotLSN)
+
+	repl, err := setupReplication(cfg, logger, store, walWriter)
+	if err != nil {
+		return err
+	}
+
+	var computeOptions []compute.Option
+	if repl != nil {
+		computeOptions = append(computeOptions, compute.WithAdmin(repl.admin))
+	}
+	comp := compute.New(parser.New(), store, logger, computeOptions...)
+	return serve(cfg, logger, comp, store, walWriter, repl, snapshotLSN)
 }
 
 func recoverPersistence(
@@ -153,6 +168,7 @@ func serve(
 	comp *compute.Compute,
 	store *storage.Storage,
 	walWriter *wal.Writer,
+	repl *replicationRuntime,
 	recoveredSnapshotLSN uint64,
 ) error {
 	srv, err := network.NewTCPServer(cfg.Network.Address, logger,
@@ -170,9 +186,13 @@ func serve(
 		defer close(serverDone)
 		srv.Start(ctx, requestHandler(comp))
 	}()
+	// Snapshots run for every role: a standby applies replicated records through
+	// the storage layer under the same lock a snapshot takes, so its snapshots
+	// are consistent, and this keeps a promoted node's WAL bounded.
 	snapshotDone := startSnapshotLoop(ctx, cfg, logger, store, walWriter, recoveredSnapshotLSN)
+	replDone := startReplication(ctx, logger, repl)
 
-	logger.Info("Server started", "address", cfg.Network.Address)
+	logger.Info("Server started", "address", cfg.Network.Address, "role", roleName(cfg.Replication.Role))
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
@@ -180,6 +200,8 @@ func serve(
 
 	logger.Info("Shutting down server...")
 	cancel()
+	stopReplication(logger, repl)
+	<-replDone
 	<-serverDone
 	<-snapshotDone
 	if walWriter != nil {
@@ -199,8 +221,18 @@ func requestHandler(comp *compute.Compute) network.RequestHandler {
 		if errors.Is(err, storage.ErrNotFound) {
 			return protocol.NullBulkString()
 		}
+		if errors.Is(err, storage.ErrReadOnly) {
+			return protocol.Error("readonly")
+		}
 		return protocol.Error(err.Error())
 	}
+}
+
+func roleName(role string) string {
+	if role == config.RoleStandalone {
+		return "standalone"
+	}
+	return role
 }
 
 func startSnapshotLoop(

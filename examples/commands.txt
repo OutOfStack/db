@@ -1,18 +1,28 @@
 # Example commands for the Simple DB service
+# Keys are scoped by table: SET <table> <key> <value>
 
 # Basic operations
-SET user_name John
-GET user_name
+SET users name John
+GET users name
 
 # Delete and verify
-DEL user_name
-GET user_name
+DEL users name
+GET users name
 
 # Special characters
-SET path/to/file.txt /home/user/documents/file.txt
-GET path/to/file.txt
+SET files path/to/file.txt /home/user/documents/file.txt
+GET files path/to/file.txt
+
+# Introspection
+TABLES                 # list all tables
+EXISTS users           # does the table exist
+KEYS users             # list keys in a table
+
+# Replication (master/standby)
+REPLICATION STATUS     # role, applied LSN, lag, connection state
+PROMOTE                # promote a standby to master
 
 # Invalid commands
-SET invalid_key  # Missing value
-GET invalid_key invalid_value  # Too many args
-UNKNOWN invalid_command  # Unknown command
+SET users name         # Missing value
+GET users name extra   # Too many args
+UNKNOWN foo            # Unknown command

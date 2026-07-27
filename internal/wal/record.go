@@ -36,6 +36,20 @@ type Record struct {
 	Args    []string
 }
 
+// EncodeRecord serializes a record to its on-disk/on-wire form (LSN, protocol
+// command, CRC32). Replication reuses this so the master ships the exact bytes a
+// standby persists to its own WAL.
+func EncodeRecord(record Record) ([]byte, error) {
+	return encodeRecord(record)
+}
+
+// ReadRecord decodes a single record previously written by EncodeRecord. It is
+// used by standbys reading the master's replication stream. A partial or
+// checksum-invalid record returns ErrPartialRecord/ErrChecksum.
+func ReadRecord(reader *bufio.Reader) (Record, error) {
+	return readRecord(reader)
+}
+
 func encodeRecord(record Record) ([]byte, error) {
 	var body bytes.Buffer
 	if err := binary.Write(&body, binary.BigEndian, record.LSN); err != nil {

@@ -12,6 +12,18 @@ wal:
   segment_size: 64          # MiB
   snapshot_interval: 5m
 
+# Replication ships the WAL from a master to standbys (asynchronous). It requires
+# wal.enabled. Leave role empty for a standalone server.
+replication:
+  role: ""                        # "", "master", or "standby"
+  # master: address standbys connect to for the WAL stream.
+  # standby (optional): if set, PROMOTE starts serving replication here so other
+  # standbys can be re-aimed at the promoted node.
+  listen_address: ""              # e.g. "127.0.0.1:3224"
+  # standby: the master's listen_address to replicate from.
+  master_address: ""              # e.g. "127.0.0.1:3224"
+  reconnect_backoff: 1s           # standby: pause between reconnect attempts
+
 network:
   address: "127.0.0.1:3223"
   max_connections: 100

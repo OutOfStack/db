@@ -8,8 +8,14 @@ import (
 
 // ServerSelector is responsible for selecting servers from the pool
 type ServerSelector interface {
-	// Select returns the next server to use, or nil if no servers available
+	// Select returns the next server to use, or nil if no servers available.
+	// It is equivalent to SelectRead and kept for backward compatibility.
 	Select() *ServerConfig
+	// SelectRead returns the next server for a read, following the strategy.
+	SelectRead() *ServerConfig
+	// SelectWrite returns the next master for a write, or nil if none available.
+	// Standbys are never returned: writes must reach a master.
+	SelectWrite() *ServerConfig
 	// MarkFailed marks a server as failed
 	MarkFailed(address string)
 	// Reset resets the selector state
@@ -38,18 +44,15 @@ func NewMasterFirstSelector(config *PoolConfig) *MasterFirstSelector {
 }
 
 // Select picks the next available server (master first, then standby)
-func (s *MasterFirstSelector) Select() *ServerConfig {
+func (s *MasterFirstSelector) Select() *ServerConfig { return s.SelectRead() }
+
+// SelectRead picks the next available server (master first, then standby)
+func (s *MasterFirstSelector) SelectRead() *ServerConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Try masters first
-	for i := range len(s.masters) {
-		idx := (s.currentMaster + i) % len(s.masters)
-		server := &s.masters[idx]
-		if !s.isFailed(server.Address) {
-			s.currentMaster = (idx + 1) % len(s.masters)
-			return server
-		}
+	if server := s.selectMasterLocked(); server != nil {
+		return server
 	}
 
 	// Fall back to standbys
@@ -62,6 +65,25 @@ func (s *MasterFirstSelector) Select() *ServerConfig {
 		}
 	}
 
+	return nil
+}
+
+// SelectWrite picks the next available master, or nil when none are available.
+func (s *MasterFirstSelector) SelectWrite() *ServerConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.selectMasterLocked()
+}
+
+func (s *MasterFirstSelector) selectMasterLocked() *ServerConfig {
+	for i := range len(s.masters) {
+		idx := (s.currentMaster + i) % len(s.masters)
+		server := &s.masters[idx]
+		if !s.isFailed(server.Address) {
+			s.currentMaster = (idx + 1) % len(s.masters)
+			return server
+		}
+	}
 	return nil
 }
 
@@ -100,7 +122,9 @@ func (s *MasterFirstSelector) isFailed(address string) bool {
 type RoundRobinSelector struct {
 	mu             sync.RWMutex
 	servers        []ServerConfig
+	masters        []ServerConfig
 	current        int
+	currentMaster  int
 	failedServers  map[string]time.Time
 	failureTimeout time.Duration
 }
@@ -109,29 +133,40 @@ type RoundRobinSelector struct {
 func NewRoundRobinSelector(config *PoolConfig) *RoundRobinSelector {
 	return &RoundRobinSelector{
 		servers:        config.Servers,
+		masters:        config.GetMasters(),
 		failedServers:  make(map[string]time.Time),
 		failureTimeout: config.FailureTimeout,
 	}
 }
 
 // Select picks the next server in round-robin order
-func (s *RoundRobinSelector) Select() *ServerConfig {
+func (s *RoundRobinSelector) Select() *ServerConfig { return s.SelectRead() }
+
+// SelectRead picks the next server in round-robin order across all servers
+func (s *RoundRobinSelector) SelectRead() *ServerConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return rotate(s.servers, &s.current, s.isFailed)
+}
 
-	if len(s.servers) == 0 {
-		return nil
-	}
+// SelectWrite picks the next master in round-robin order
+func (s *RoundRobinSelector) SelectWrite() *ServerConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return rotate(s.masters, &s.currentMaster, s.isFailed)
+}
 
-	for i := range len(s.servers) {
-		idx := (s.current + i) % len(s.servers)
-		server := &s.servers[idx]
-		if !s.isFailed(server.Address) {
-			s.current = (idx + 1) % len(s.servers)
+// rotate returns the next non-failed server from servers starting at *cursor,
+// advancing the cursor past the chosen server.
+func rotate(servers []ServerConfig, cursor *int, isFailed func(string) bool) *ServerConfig {
+	for i := range servers {
+		idx := (*cursor + i) % len(servers)
+		server := &servers[idx]
+		if !isFailed(server.Address) {
+			*cursor = (idx + 1) % len(servers)
 			return server
 		}
 	}
-
 	return nil
 }
 
@@ -169,6 +204,7 @@ func (s *RoundRobinSelector) isFailed(address string) bool {
 type RandomSelector struct {
 	mu             sync.RWMutex
 	servers        []ServerConfig
+	masters        []ServerConfig
 	failedServers  map[string]time.Time
 	failureTimeout time.Duration
 }
@@ -177,35 +213,42 @@ type RandomSelector struct {
 func NewRandomSelector(config *PoolConfig) *RandomSelector {
 	return &RandomSelector{
 		servers:        config.Servers,
+		masters:        config.GetMasters(),
 		failedServers:  make(map[string]time.Time),
 		failureTimeout: config.FailureTimeout,
 	}
 }
 
 // Select picks a random available server
-func (s *RandomSelector) Select() *ServerConfig {
+func (s *RandomSelector) Select() *ServerConfig { return s.SelectRead() }
+
+// SelectRead picks a random available server across all servers
+func (s *RandomSelector) SelectRead() *ServerConfig {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.pickRandom(s.servers)
+}
 
-	if len(s.servers) == 0 {
-		return nil
-	}
+// SelectWrite picks a random available master
+func (s *RandomSelector) SelectWrite() *ServerConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pickRandom(s.masters)
+}
 
-	// Get available servers
+func (s *RandomSelector) pickRandom(servers []ServerConfig) *ServerConfig {
 	available := []int{}
-	for i := range s.servers {
-		if !s.isFailed(s.servers[i].Address) {
+	for i := range servers {
+		if !s.isFailed(servers[i].Address) {
 			available = append(available, i)
 		}
 	}
-
 	if len(available) == 0 {
 		return nil
 	}
-
 	//nolint:gosec // Non-cryptographic random is sufficient for server selection
 	idx := available[rand.IntN(len(available))]
-	return &s.servers[idx]
+	return &servers[idx]
 }
 
 // MarkFailed marks a server as failed

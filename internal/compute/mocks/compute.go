@@ -95,3 +95,57 @@ func (mr *MockParserMockRecorder) Parse(cmd, args any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Parse", reflect.TypeOf((*MockParser)(nil).Parse), cmd, args)
 }
+
+// MockAdmin is a mock of Admin interface.
+type MockAdmin struct {
+	ctrl     *gomock.Controller
+	recorder *MockAdminMockRecorder
+	isgomock struct{}
+}
+
+// MockAdminMockRecorder is the mock recorder for MockAdmin.
+type MockAdminMockRecorder struct {
+	mock *MockAdmin
+}
+
+// NewMockAdmin creates a new mock instance.
+func NewMockAdmin(ctrl *gomock.Controller) *MockAdmin {
+	mock := &MockAdmin{ctrl: ctrl}
+	mock.recorder = &MockAdminMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockAdmin) EXPECT() *MockAdminMockRecorder {
+	return m.recorder
+}
+
+// Promote mocks base method.
+func (m *MockAdmin) Promote(ctx context.Context) (protocol.Reply, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Promote", ctx)
+	ret0, _ := ret[0].(protocol.Reply)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Promote indicates an expected call of Promote.
+func (mr *MockAdminMockRecorder) Promote(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Promote", reflect.TypeOf((*MockAdmin)(nil).Promote), ctx)
+}
+
+// Status mocks base method.
+func (m *MockAdmin) Status(ctx context.Context) (protocol.Reply, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Status", ctx)
+	ret0, _ := ret[0].(protocol.Reply)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Status indicates an expected call of Status.
+func (mr *MockAdminMockRecorder) Status(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Status", reflect.TypeOf((*MockAdmin)(nil).Status), ctx)
+}
