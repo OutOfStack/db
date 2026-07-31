@@ -8,8 +8,10 @@ import (
 )
 
 const (
-	// TypeInMemory is the type for the in-memory engine
+	// TypeInMemory is the type for the in-memory (RAM-only) engine
 	TypeInMemory = "in_memory"
+	// TypeTiered is the type for the memory/disk tiered engine
+	TypeTiered = "tiered"
 )
 
 var (

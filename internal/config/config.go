@@ -12,6 +12,10 @@ import (
 // defaultAddress is the default server address shared by server and client configs
 const defaultAddress = "127.0.0.1:3223"
 
+// defaultDataDir is the default on-disk directory for WAL segments, snapshots,
+// and tiered-engine segments.
+const defaultDataDir = "data"
+
 // getAllowedConfigDirs returns the list of directories to search for config files.
 // It checks current directory, user config directory, and user home directory
 func getAllowedConfigDirs() []string {

@@ -58,10 +58,19 @@ type ServerWALConfig struct {
 	SnapshotInterval time.Duration  `yaml:"snapshot_interval"`
 }
 
-// ServerEngineConfig holds configuration for the database engine.
-// Currently only supports "in_memory" type
+// ServerEngineConfig holds configuration for the database engine. Type is
+// "in_memory" (RAM-only) or "tiered" (memory/disk). The Tiered* fields apply
+// only to the tiered engine, which provides its own durability and therefore
+// cannot be combined with the WAL or replication.
 type ServerEngineConfig struct {
-	Type string `yaml:"type"`
+	Type                string         `yaml:"type"`
+	DataDir             string         `yaml:"data_dir"`
+	MaxMemoryMB         int64          `yaml:"max_memory"`           // hot values kept in RAM (MiB)
+	MaxStorageMB        int64          `yaml:"max_storage"`          // live dataset ceiling (MiB)
+	Sync                wal.SyncPolicy `yaml:"sync"`                 // fsync policy for segments
+	SegmentSizeMB       int64          `yaml:"segment_size"`         // segment file size (MiB)
+	CompactionThreshold float64        `yaml:"compaction_threshold"` // reclaim a segment past this dead-bytes ratio
+	CompactionInterval  time.Duration  `yaml:"compaction_interval"`  // compaction/stats check period
 }
 
 // ServerNetworkConfig - network-related configuration for the database server
@@ -85,11 +94,18 @@ type ServerLoggingConfig struct {
 func DefaultServerConfig() *ServerConfig {
 	return &ServerConfig{
 		Engine: ServerEngineConfig{
-			Type: engine.TypeInMemory,
+			Type:                engine.TypeInMemory,
+			DataDir:             defaultDataDir,
+			MaxMemoryMB:         64,
+			MaxStorageMB:        1024,
+			Sync:                wal.SyncEverySec,
+			SegmentSizeMB:       64,
+			CompactionThreshold: 0.5,
+			CompactionInterval:  30 * time.Second,
 		},
 		WAL: ServerWALConfig{
 			Enabled:          false,
-			DataDir:          "data",
+			DataDir:          defaultDataDir,
 			Sync:             wal.SyncEverySec,
 			SegmentSizeMB:    64,
 			SnapshotInterval: 5 * time.Minute,
@@ -149,8 +165,8 @@ func (c *ServerConfig) applyEnvOverrides() error {
 
 // Validate checks if the configuration values are valid
 func (c *ServerConfig) Validate() error {
-	if c.Engine.Type != engine.TypeInMemory {
-		return fmt.Errorf("unsupported engine type: %s", c.Engine.Type)
+	if err := c.Engine.validate(c.WAL.Enabled, c.Replication.Role); err != nil {
+		return err
 	}
 
 	if c.Network.Address == "" {
@@ -187,6 +203,53 @@ func (c *ServerConfig) Validate() error {
 	}
 
 	return c.Replication.validate(c.WAL.Enabled)
+}
+
+// validate checks engine settings. The tiered engine keeps its own durable
+// segment store, so it is mutually exclusive with the WAL and with replication
+// (which ships the WAL); enabling either alongside it is a configuration error.
+func (c *ServerEngineConfig) validate(walEnabled bool, replicationRole string) error {
+	switch c.Type {
+	case engine.TypeInMemory:
+		return nil
+	case engine.TypeTiered:
+	default:
+		return fmt.Errorf("unsupported engine type: %s", c.Type)
+	}
+
+	if walEnabled {
+		return errors.New("engine tiered cannot be combined with wal.enabled (it has its own durable store)")
+	}
+	if replicationRole != RoleStandalone {
+		return errors.New("engine tiered does not support replication yet")
+	}
+	if c.DataDir == "" {
+		return errors.New("engine data_dir cannot be empty")
+	}
+	if c.MaxMemoryMB <= 0 {
+		return errors.New("engine max_memory must be positive")
+	}
+	if c.MaxStorageMB <= 0 {
+		return errors.New("engine max_storage must be positive")
+	}
+	if c.MaxMemoryMB > c.MaxStorageMB {
+		return errors.New("engine max_memory must not exceed max_storage")
+	}
+	if c.SegmentSizeMB <= 0 {
+		return errors.New("engine segment_size must be positive")
+	}
+	if c.CompactionThreshold <= 0 || c.CompactionThreshold > 1 {
+		return errors.New("engine compaction_threshold must be in (0, 1]")
+	}
+	if c.CompactionInterval <= 0 {
+		return errors.New("engine compaction_interval must be positive")
+	}
+	switch c.Sync {
+	case wal.SyncAlways, wal.SyncEverySec, wal.SyncNo:
+	default:
+		return fmt.Errorf("unsupported engine sync policy: %s", c.Sync)
+	}
+	return nil
 }
 
 // validate checks replication settings. Replication requires WAL persistence,
