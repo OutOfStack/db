@@ -104,8 +104,15 @@ func (e *Engine) pickCompactible() (uint32, bool) {
 // (segment, offset); everything else is a superseded overwrite or a tombstone.
 func (e *Engine) compactSegment(seg uint32) error {
 	var writeErr error
+	oldest := e.store.segments()[0]
 	scanErr := e.store.scanSegment(seg, false, func(rec decoded, recPos int64) {
-		if writeErr != nil || rec.tombstone {
+		if writeErr != nil {
+			return
+		}
+		if rec.tombstone {
+			if err := e.keepTombstone(seg, oldest, rec); err != nil {
+				writeErr = err
+			}
 			return
 		}
 		location, ok := e.lookup(rec.table, rec.key)
@@ -139,4 +146,24 @@ func (e *Engine) compactSegment(seg uint32) error {
 	}
 	delete(e.segLive, seg)
 	return nil
+}
+
+// keepTombstone carries a delete forward when dropping it could resurrect a key.
+// An older segment may still hold the SET this tombstone buried; once the
+// tombstone's segment is unlinked, recovery would scan that SET with nothing
+// after it and bring the key back. Rewriting into the active segment keeps the
+// delete newer than any surviving value.
+//
+// ponytail: a carried tombstone is only ever dropped once its segment is the
+// oldest, so deletes can ride along for several passes. Track the oldest
+// segment that could hold each key if tombstone churn ever shows up on disk.
+func (e *Engine) keepTombstone(seg, oldest uint32, rec decoded) error {
+	if seg == oldest {
+		return nil // nothing older can hold the deleted value
+	}
+	if _, live := e.lookup(rec.table, rec.key); live {
+		return nil // a later SET already superseded this delete
+	}
+	_, _, err := e.store.append(encodeRecord(rec.table, rec.key, "", true))
+	return err
 }

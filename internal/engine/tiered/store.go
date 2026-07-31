@@ -209,6 +209,14 @@ func (s *store) openNewActive(num uint32) error {
 	if err != nil {
 		return fmt.Errorf("create segment %d: %w", num, err)
 	}
+	// Syncing the file alone does not persist its directory entry, so a crash
+	// right after rotation could lose the whole segment along with writes that
+	// were already acknowledged.
+	if s.sync != wal.SyncNo {
+		if err = wal.SyncDirectory(s.dir); err != nil {
+			return fmt.Errorf("sync data directory: %w", err)
+		}
+	}
 	s.activeSeg = num
 	s.readers[num] = file
 	s.sizes[num] = 0
@@ -228,13 +236,19 @@ func (s *store) append(rec []byte) (uint32, int64, error) {
 	}
 	recPos := s.activeSize()
 	written, err := s.active().WriteAt(rec, recPos)
-	s.sizes[s.activeSeg] += int64(written)
+	if err == nil && written != len(rec) {
+		err = io.ErrShortWrite
+	}
 	if err != nil {
+		// Drop the partial record instead of counting it: leaving it in place
+		// would put later (acknowledged) appends behind damage that recovery
+		// truncates away.
+		if truncErr := s.active().Truncate(recPos); truncErr != nil {
+			return 0, 0, errors.Join(fmt.Errorf("write record: %w", err), truncErr)
+		}
 		return 0, 0, fmt.Errorf("write record: %w", err)
 	}
-	if written != len(rec) {
-		return 0, 0, io.ErrShortWrite
-	}
+	s.sizes[s.activeSeg] += int64(written)
 	return s.activeSeg, recPos, nil
 }
 

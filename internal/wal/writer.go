@@ -461,7 +461,7 @@ func (w *Writer) reset(state *writerState, lsn uint64) error {
 			return fmt.Errorf("remove WAL segment during reset: %w", err)
 		}
 	}
-	if err = syncDirectory(w.config.Dir); err != nil {
+	if err = SyncDirectory(w.config.Dir); err != nil {
 		return fmt.Errorf("sync WAL directory during reset: %w", err)
 	}
 	w.lastLSN.Store(lsn)
@@ -487,7 +487,7 @@ func (w *Writer) ensureSegment(state *writerState, lsn uint64, recordSize int64)
 		return err
 	}
 	if w.config.Sync != SyncNo {
-		if err = syncDirectory(w.config.Dir); err != nil {
+		if err = SyncDirectory(w.config.Dir); err != nil {
 			_ = file.Close()
 			return fmt.Errorf("sync WAL directory: %w", err)
 		}
@@ -607,7 +607,7 @@ func (w *Writer) prune(state *writerState, uptoLSN uint64) error {
 				return fmt.Errorf("remove WAL segment: %w", err)
 			}
 		}
-		return syncDirectory(w.config.Dir)
+		return SyncDirectory(w.config.Dir)
 	}
 
 	for index := 0; index+1 < len(segments); index++ {
@@ -618,5 +618,5 @@ func (w *Writer) prune(state *writerState, uptoLSN uint64) error {
 			return fmt.Errorf("remove WAL segment: %w", err)
 		}
 	}
-	return syncDirectory(w.config.Dir)
+	return SyncDirectory(w.config.Dir)
 }

@@ -226,6 +226,62 @@ func TestCompactionReclaimsDisk(t *testing.T) {
 	}
 }
 
+// TestCompactionKeepsTombstoneAboveLiveSegment pins the resurrection case: the
+// tombstone sits in a compactible segment while the value it buried is in an
+// older segment that stays live. Dropping the tombstone with its segment would
+// leave the old SET as the newest record for that key, and recovery would bring
+// the key back.
+func TestCompactionKeepsTombstoneAboveLiveSegment(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	cfg.SegmentSize = 256
+	ctx := context.Background()
+
+	e, err := tiered.Open(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = e.Close() })
+
+	// Segment 1: the victim plus filler that is never overwritten, so the segment
+	// stays fully live and is never itself compacted.
+	if err = e.Set(ctx, "t", "victim", "buried"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; e.Stats().Segments == 1; i++ {
+		if err = e.Set(ctx, "t", fmt.Sprintf("keep%02d", i), "live-value"); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Later segments: the tombstone, then churn that turns them mostly dead.
+	if err = e.Del(ctx, "t", "victim"); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 20 {
+		if err = e.Set(ctx, "t", fmt.Sprintf("d%02d", i), "throwaway-value"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := range 20 {
+		if err = e.Del(ctx, "t", fmt.Sprintf("d%02d", i)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for range e.Stats().Segments {
+		e.Compact()
+	}
+	if e.Stats().Compactions == 0 {
+		t.Fatal("expected at least one compaction")
+	}
+
+	e2 := open(t, cfg)
+	if _, err = e2.Get(ctx, "t", "victim"); !errors.Is(err, engine.ErrNotFound) {
+		t.Fatalf("deleted key resurrected after compaction + restart: %v", err)
+	}
+}
+
 // TestRestartAfterCompaction reopens the data directory without closing the
 // engine (a crash right after a compaction pass): the rewritten records must be
 // on disk, since compaction already deleted the segment they came from.
