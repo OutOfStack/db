@@ -20,8 +20,7 @@ import (
 	"github.com/OutOfStack/db/internal/storage"
 )
 
-// startServer starts an in-process database server on an ephemeral port
-// and returns its address
+// startServer starts an in-process database server on an ephemeral port and returns its address
 func startServer(t *testing.T, opts ...network.TCPServerOption) string {
 	t.Helper()
 
@@ -29,9 +28,8 @@ func startServer(t *testing.T, opts ...network.TCPServerOption) string {
 	return addr
 }
 
-// startStoppableServer starts an in-process database server on an ephemeral
-// port and returns its address and a stop function. The stop function blocks
-// until the server no longer accepts new connections
+// startStoppableServer starts an in-process database server on an ephemeral port and returns its address and a stop
+// function. The stop function blocks until the server no longer accepts new connections
 func startStoppableServer(t *testing.T, opts ...network.TCPServerOption) (addr string, stop func()) {
 	t.Helper()
 
@@ -272,8 +270,7 @@ func TestClient_MessageSizeLimit(t *testing.T) {
 
 	ctx := t.Context()
 
-	// large-but-legal request near the limit round-trips
-	// (frame overhead for SET users big <value> is ~40 bytes)
+	// large-but-legal request near the limit round-trips (frame overhead for SET users big <value> is ~40 bytes)
 	nearLimit := strings.Repeat("x", serverLimit-64)
 	if err = c.Set(ctx, "users", "big", nearLimit); err != nil {
 		t.Fatalf("Set() near limit error = %v", err)
@@ -322,8 +319,7 @@ func TestClient_OversizedReplyDoesNotDesyncConnection(t *testing.T) {
 		t.Fatalf("Get() oversized reply error = %v, want size limit error", err)
 	}
 
-	// ...without leaving the rejected reply's bytes on the connection:
-	// subsequent commands must see their own replies
+	// ...without leaving the rejected reply's bytes on the connection: subsequent commands must see their own replies
 	if err = c.Set(ctx, "users", "small", "v"); err != nil {
 		t.Fatalf("Set() after oversized reply error = %v", err)
 	}
@@ -389,8 +385,8 @@ func TestClient_Pool_Failover(t *testing.T) {
 		t.Fatalf("Get() = %q, %v; want %q, nil", got, err, "master-value")
 	}
 
-	// Seed the standby directly (these in-process servers do not replicate) so a
-	// read that fails over to it returns an observably different value.
+	// Seed the standby directly (these in-process servers do not replicate) so a read that fails over to it returns an
+	// observably different value.
 	standby, err := client.New(client.WithAddress(standbyAddr))
 	if err != nil {
 		t.Fatalf("standby client New() error = %v", err)
@@ -402,8 +398,8 @@ func TestClient_Pool_Failover(t *testing.T) {
 
 	stopMaster()
 
-	// Reads fail over to the standby. The master's established connection may
-	// absorb at most one more request before it closes, so retry until failover.
+	// Reads fail over to the standby. The master's established connection may absorb at most one more request before it
+	// closes, so retry until failover.
 	if err = eventually(func() bool {
 		v, gErr := c.Get(ctx, "t", "key")
 		return gErr == nil && v == "standby-value"
@@ -411,8 +407,8 @@ func TestClient_Pool_Failover(t *testing.T) {
 		t.Errorf("Get() did not fail over to standby: %v", err)
 	}
 
-	// Writes route only to masters, so with the master down they must fail rather
-	// than silently land on the read-only standby.
+	// Writes route only to masters, so with the master down they must fail rather than silently land on the read-only
+	// standby.
 	if err = eventually(func() bool {
 		return c.Set(ctx, "t", "key", "new-value") != nil
 	}); err != nil {
@@ -429,4 +425,77 @@ func eventually(cond func() bool) error {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return errors.New("condition not met within timeout")
+}
+
+func TestClient_TypedValuesRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	addr := startServer(t)
+
+	c, err := client.New(client.WithAddress(addr))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer c.Close()
+
+	ctx := t.Context()
+
+	types := []struct{ key, literal, kind, want string }{
+		{"text", "vlad", "string", "vlad"},
+		{"quoted", `"42"`, "string", "42"},
+		{"count", "42", "int", "42"},
+		{"ratio", "0.5", "float", "0.5"},
+		{"on", "true", "bool", "true"},
+		{"list", "[1,2]", "array", "[1,2]"},
+		{"conf", `{"b":2,"a":"x"}`, "map", `{"a":"x","b":2}`},
+	}
+	for _, tt := range types {
+		if err = c.Set(ctx, "t", tt.key, tt.literal); err != nil {
+			t.Fatalf("Set(%s) error = %v", tt.literal, err)
+		}
+		kind, tErr := c.Type(ctx, "t", tt.key)
+		if tErr != nil || kind != tt.kind {
+			t.Errorf("Type(%s) = %q, %v; want %q", tt.literal, kind, tErr, tt.kind)
+		}
+		got, gErr := c.Get(ctx, "t", tt.key)
+		if gErr != nil || got != tt.want {
+			t.Errorf("Get(%s) = %q, %v; want %q", tt.literal, got, gErr, tt.want)
+		}
+	}
+
+	if got, iErr := c.Incr(ctx, "stats", "hits", ""); iErr != nil || got != "1" {
+		t.Errorf("Incr() = %q, %v; want 1", got, iErr)
+	}
+	if got, iErr := c.Incr(ctx, "stats", "hits", "1.5"); iErr != nil || got != "2.5" {
+		t.Errorf("Incr(1.5) = %q, %v; want 2.5", got, iErr)
+	}
+
+	if n, aErr := c.Append(ctx, "t", "log", "first"); aErr != nil || n != 1 {
+		t.Errorf("Append() = %d, %v; want 1", n, aErr)
+	}
+	if n, aErr := c.Append(ctx, "t", "log", "2"); aErr != nil || n != 2 {
+		t.Errorf("Append() = %d, %v; want 2", n, aErr)
+	}
+	if got, gErr := c.Get(ctx, "t", "log"); gErr != nil || got != `["first",2]` {
+		t.Errorf("Get(log) = %q, %v", got, gErr)
+	}
+
+	if err = c.HSet(ctx, "t", "user", "name", "vlad"); err != nil {
+		t.Fatalf("HSet() error = %v", err)
+	}
+	if got, hErr := c.HGet(ctx, "t", "user", "name"); hErr != nil || got != "vlad" {
+		t.Errorf("HGet() = %q, %v; want vlad", got, hErr)
+	}
+	if _, hErr := c.HGet(ctx, "t", "user", "missing"); !errors.Is(hErr, client.ErrNotFound) {
+		t.Errorf("HGet(missing field) error = %v, want ErrNotFound", hErr)
+	}
+
+	_, err = c.Incr(ctx, "t", "list", "")
+	var srvErr *client.ServerError
+	if !errors.As(err, &srvErr) {
+		t.Fatalf("Incr() on an array error = %v, want ServerError", err)
+	}
+	if want := "wrong type: key holds array, INCR requires int or float"; srvErr.Msg != want {
+		t.Errorf("Incr() on an array = %q, want %q", srvErr.Msg, want)
+	}
 }

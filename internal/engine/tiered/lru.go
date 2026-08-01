@@ -1,10 +1,12 @@
 package tiered
 
-import "container/list"
+import (
+	"container/list"
+	"sync"
+)
 
-// lruEntryOverhead approximates the fixed per-entry cost (map bucket, list
-// element, string headers) so the cache is sized by real memory, not payload
-// bytes alone.
+// lruEntryOverhead approximates the fixed per-entry cost (map bucket, list element, string headers) so the cache is
+// sized by real memory, not payload bytes alone.
 const lruEntryOverhead = 48
 
 type lruKey struct {
@@ -18,10 +20,11 @@ type lruNode struct {
 	bytes int64
 }
 
-// lruCache is a byte-sized LRU: a map for O(1) lookup plus a list ordering
-// entries most- to least-recently-used. It is not safe for concurrent use; the
-// engine calls it under its mutex.
+// lruCache is a byte-sized LRU: a map for O(1) lookup plus a list ordering entries most- to least-recently-used. It
+// carries its own mutex because a cache hit reorders the list, and the engine serves reads under a shared read lock:
+// concurrent readers mutate this while none of them holds the engine exclusively.
 type lruCache struct {
+	mu       sync.Mutex
 	maxBytes int64
 	curBytes int64
 	items    map[lruKey]*list.Element
@@ -37,6 +40,9 @@ func nodeBytes(k lruKey, value string) int64 {
 }
 
 func (c *lruCache) get(table, key string) (string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	element, ok := c.items[lruKey{table, key}]
 	if !ok {
 		return "", false
@@ -46,12 +52,15 @@ func (c *lruCache) get(table, key string) (string, bool) {
 	return element.Value.(*lruNode).value, true
 }
 
-// put caches value, evicting to stay within budget. An entry that alone exceeds
-// the whole budget is never cached: it stays disk-only, so max_memory is a real
-// ceiling. Any previously cached value for the key is dropped, never left stale.
+// put caches value, evicting to stay within budget. An entry that alone exceeds the whole budget is never cached: it
+// stays disk-only, so max_memory is a real ceiling. Any previously cached value for the key is dropped, never left
+// stale.
 func (c *lruCache) put(table, key, value string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	k := lruKey{table, key}
-	c.remove(table, key)
+	c.dropKey(k)
 	bytes := nodeBytes(k, value)
 	if bytes > c.maxBytes {
 		return
@@ -62,7 +71,15 @@ func (c *lruCache) put(table, key, value string) {
 }
 
 func (c *lruCache) remove(table, key string) {
-	if element, ok := c.items[lruKey{table, key}]; ok {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.dropKey(lruKey{table, key})
+}
+
+// dropKey removes a key if it is cached. The caller holds c.mu.
+func (c *lruCache) dropKey(k lruKey) {
+	if element, ok := c.items[k]; ok {
 		c.drop(element)
 	}
 }

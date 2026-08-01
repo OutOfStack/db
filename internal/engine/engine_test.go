@@ -1,8 +1,10 @@
 package engine_test
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
+	"strconv"
 	"sync"
 	"testing"
 
@@ -233,8 +235,8 @@ func TestEngine_ConcurrentAccess(t *testing.T) {
 	// Create a channel to signal when all operations are done
 	done := make(chan struct{})
 
-	// Start multiple goroutines performing concurrent operations,
-	// each goroutine working in its own table and a shared table
+	// Start multiple goroutines performing concurrent operations, each goroutine working in its own table and a shared
+	// table
 	for i := range numGoroutines {
 		go func() {
 			table := fmt.Sprintf("table-%d", i%3)
@@ -282,5 +284,56 @@ func TestEngine_ConcurrentAccess(t *testing.T) {
 	// Wait for all goroutines to finish
 	for range numGoroutines {
 		<-done
+	}
+}
+
+func TestEngine_UpdateIsAtomic(t *testing.T) {
+	t.Parallel()
+	eng := engine.New()
+
+	const n = 200
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			err := eng.Update(t.Context(), "t", "counter", func(old string, exists bool) (string, error) {
+				count := 0
+				if exists {
+					var pErr error
+					if count, pErr = strconv.Atoi(old); pErr != nil {
+						return "", pErr
+					}
+				}
+				return strconv.Itoa(count + 1), nil
+			})
+			if err != nil {
+				t.Errorf("Update failed: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+
+	got, err := eng.Get(t.Context(), "t", "counter")
+	if err != nil {
+		t.Fatalf("Get failed: %v", err)
+	}
+	if got != strconv.Itoa(n) {
+		t.Errorf("counter = %s, want %d (lost updates)", got, n)
+	}
+}
+
+func TestEngine_UpdateErrorStoresNothing(t *testing.T) {
+	t.Parallel()
+	eng := engine.New()
+
+	wantErr := errors.New("rejected")
+	err := eng.Update(t.Context(), "t", "k", func(string, bool) (string, error) { return "v", wantErr })
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("Update error = %v, want %v", err, wantErr)
+	}
+	if _, err = eng.Get(t.Context(), "t", "k"); !errors.Is(err, engine.ErrNotFound) {
+		t.Errorf("Get after failed Update = %v, want ErrNotFound", err)
+	}
+	if eng.TableExists(t.Context(), "t") {
+		t.Error("failed Update created the table")
 	}
 }

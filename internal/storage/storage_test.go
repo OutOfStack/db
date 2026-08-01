@@ -18,8 +18,12 @@ import (
 	"go.uber.org/mock/gomock"
 )
 
-// newStorageWithMock creates a storage instance with its own mock engine so
-// subtests stay independent and can run in parallel
+func encoded(value string) string {
+	return protocol.Encode(protocol.StringValue(value))
+}
+
+// newStorageWithMock creates a storage instance with its own mock engine so subtests stay independent and can run in
+// parallel
 func newStorageWithMock(t *testing.T) (*storage.Storage, *mocks.MockEngine) {
 	t.Helper()
 	mockEngine := mocks.NewMockEngine(gomock.NewController(t))
@@ -57,11 +61,11 @@ func TestStorage_WALBeforeMutation(t *testing.T) {
 	appended := false
 	log := &fakeWAL{append: func(_ context.Context, command string, args []string) (uint64, error) {
 		assert.Equal(t, "SET", command)
-		assert.Equal(t, []string{"t", "k", "v"}, args)
+		assert.Equal(t, []string{"t", "k", encoded("v")}, args)
 		appended = true
 		return 1, nil
 	}}
-	mockEngine.EXPECT().Set(ctx, "t", "k", "v").DoAndReturn(func(context.Context, string, string, string) error {
+	mockEngine.EXPECT().Set(ctx, "t", "k", encoded("v")).DoAndReturn(func(context.Context, string, string, string) error {
 		assert.True(t, appended, "engine mutation happened before WAL append")
 		return nil
 	})
@@ -82,9 +86,8 @@ func TestStorage_WALFailurePreventsMutation(t *testing.T) {
 	assert.Empty(t, result)
 }
 
-// TestStorage_ConcurrentMutationsApplyInLSNOrder verifies that when many
-// mutations append concurrently (so the WAL can group-commit them), they still
-// land in the engine in LSN order: the surviving value is the highest-LSN write.
+// TestStorage_ConcurrentMutationsApplyInLSNOrder verifies that when many mutations append concurrently (so the WAL can
+// group-commit them), they still land in the engine in LSN order: the surviving value is the highest-LSN write.
 func TestStorage_ConcurrentMutationsApplyInLSNOrder(t *testing.T) {
 	t.Parallel()
 	eng := engine.New()
@@ -98,8 +101,8 @@ func TestStorage_ConcurrentMutationsApplyInLSNOrder(t *testing.T) {
 		assigned := lsn
 		valueByLSN[assigned] = args[2]
 		mu.Unlock()
-		// Jitter so appends return out of order relative to their LSNs; the apply
-		// gate must still serialize the engine writes by LSN.
+		// Jitter so appends return out of order relative to their LSNs; the apply gate must still serialize the engine writes
+		// by LSN.
 		time.Sleep(time.Duration(assigned%3) * time.Millisecond)
 		return assigned, nil
 	}}
@@ -160,8 +163,7 @@ func TestStorage_Execute(t *testing.T) {
 		key := "test_key"
 		value := "test_value"
 
-		// Mock the Set call
-		mockEngine.EXPECT().Set(ctx, table, key, value).Return(nil)
+		mockEngine.EXPECT().Set(ctx, table, key, encoded(value)).Return(nil)
 
 		result, err := s.Execute(ctx, "SET", []string{table, key, value})
 		require.NoError(t, err)
@@ -252,7 +254,7 @@ func TestStorage_Execute(t *testing.T) {
 		expectedErr := errors.New("engine error")
 
 		// Mock the Set call to return an error
-		mockEngine.EXPECT().Set(ctx, table, key, value).Return(expectedErr)
+		mockEngine.EXPECT().Set(ctx, table, key, encoded(value)).Return(expectedErr)
 
 		result, err := s.Execute(ctx, "SET", []string{table, key, value})
 		require.Error(t, err)
@@ -319,8 +321,8 @@ func TestStorage_Promote(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 	mockEngine := mocks.NewMockEngine(gomock.NewController(t))
-	// Replication advanced the WAL to LSN 5 while the standby was read-only; the
-	// gate must reset to 6 on promotion so the first client write applies.
+	// Replication advanced the WAL to LSN 5 while the standby was read-only; the gate must reset to 6 on promotion so the
+	// first client write applies.
 	log := &fakeWAL{last: 5, append: func(context.Context, string, []string) (uint64, error) { return 6, nil }}
 	store := storage.New(mockEngine, storage.WithWAL(log), storage.WithReadOnly(true))
 
@@ -330,7 +332,7 @@ func TestStorage_Promote(t *testing.T) {
 	store.Promote()
 	require.False(t, store.ReadOnly())
 
-	mockEngine.EXPECT().Set(ctx, "t", "k", "v").Return(nil)
+	mockEngine.EXPECT().Set(ctx, "t", "k", encoded("v")).Return(nil)
 	res, err := store.Execute(ctx, "SET", []string{"t", "k", "v"})
 	require.NoError(t, err)
 	assert.Equal(t, "OK", res.Value)

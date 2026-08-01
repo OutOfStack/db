@@ -146,8 +146,8 @@ func TestReadReplyRejectsMalformedPrefix(t *testing.T) {
 func TestRejectsHugeArrayCount(t *testing.T) {
 	t.Parallel()
 
-	// declared counts that could never fit in the size limit must be rejected
-	// before any allocation happens (a naive prealloc panics or OOMs)
+	// declared counts that could never fit in the size limit must be rejected before any allocation happens (a naive
+	// prealloc panics or OOMs)
 	for _, input := range []string{
 		"*9223372036854775807\r\n",
 		"*1000000000\r\n$1\r\na\r\n",
@@ -164,8 +164,8 @@ func TestRejectsHugeArrayCount(t *testing.T) {
 func TestWriteReplySanitizesCRLF(t *testing.T) {
 	t.Parallel()
 
-	// CR/LF in line-based replies must not break framing: a crafted error
-	// message must decode as exactly one reply, not smuggle in a second one
+	// CR/LF in line-based replies must not break framing: a crafted error message must decode as exactly one reply, not
+	// smuggle in a second one
 	var buf bytes.Buffer
 	if err := protocol.WriteReply(&buf, protocol.Error("unknown command: FOO\r\n+OK")); err != nil {
 		t.Fatalf("WriteReply() error = %v", err)
@@ -222,8 +222,8 @@ func FuzzReadReply(f *testing.F) {
 		if err != nil {
 			return
 		}
-		// the first encode may normalize (ERR prefix, CR/LF sanitization);
-		// after that, encode/decode must be a stable round trip
+		// the first encode may normalize (ERR prefix, CR/LF sanitization); after that, encode/decode must be a stable round
+		// trip
 		r2, err := rewrite(r1)
 		if err != nil {
 			t.Fatalf("first re-encode of %#v error = %v", r1, err)

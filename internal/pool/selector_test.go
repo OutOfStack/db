@@ -23,7 +23,7 @@ func TestMasterFirstSelector(t *testing.T) {
 	selector := pool.NewMasterFirstSelector(config)
 
 	// First select should return a master
-	server := selector.Select()
+	server := selector.SelectRead()
 	if server == nil {
 		t.Fatal("Expected server, got nil")
 	} else if server.Role != pool.RoleMaster {
@@ -35,7 +35,7 @@ func TestMasterFirstSelector(t *testing.T) {
 	selector.MarkFailed("master2")
 
 	// Should fall back to standby
-	server = selector.Select()
+	server = selector.SelectRead()
 	if server == nil {
 		t.Fatal("Expected standby server, got nil")
 	} else if server.Role != pool.RoleStandby {
@@ -47,14 +47,14 @@ func TestMasterFirstSelector(t *testing.T) {
 	selector.MarkFailed("standby2")
 
 	// Should return nil when all servers failed
-	server = selector.Select()
+	server = selector.SelectRead()
 	if server != nil {
 		t.Errorf("Expected nil when all servers failed, got %v", server)
 	}
 
 	// Reset should clear failures
 	selector.Reset()
-	server = selector.Select()
+	server = selector.SelectRead()
 	if server == nil {
 		t.Fatal("Expected server after reset, got nil")
 	} else if server.Role != pool.RoleMaster {
@@ -79,7 +79,7 @@ func TestRoundRobinSelector(t *testing.T) {
 	// Track which servers we get
 	seen := make(map[string]int)
 	for range 6 {
-		server := selector.Select()
+		server := selector.SelectRead()
 		if server == nil {
 			t.Fatal("Expected server, got nil")
 		}
@@ -111,7 +111,7 @@ func TestRandomSelector(t *testing.T) {
 
 	// Select multiple times and ensure we get valid servers
 	for range 10 {
-		server := selector.Select()
+		server := selector.SelectRead()
 		if server == nil {
 			t.Fatal("Expected server, got nil")
 		}
@@ -134,7 +134,7 @@ func TestRandomSelector(t *testing.T) {
 
 	// Should always return server3 now
 	for range 5 {
-		server := selector.Select()
+		server := selector.SelectRead()
 		if server == nil {
 			t.Fatal("Expected server3, got nil")
 		}

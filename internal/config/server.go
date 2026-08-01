@@ -37,10 +37,9 @@ type ServerConfig struct {
 	Logging     ServerLoggingConfig     `yaml:"logging"`
 }
 
-// ServerReplicationConfig controls master/standby log shipping. Role is
-// "master", "standby", or empty (standalone). A master streams its WAL to
-// standbys that connect to ListenAddress; a standby connects to MasterAddress.
-// Replication requires WAL persistence to be enabled.
+// ServerReplicationConfig controls master/standby log shipping. Role is "master", "standby", or empty (standalone). A
+// master streams its WAL to standbys that connect to ListenAddress; a standby connects to MasterAddress. Replication
+// requires WAL persistence to be enabled.
 type ServerReplicationConfig struct {
 	Role             string        `yaml:"role"`
 	ListenAddress    string        `yaml:"listen_address"`
@@ -48,8 +47,7 @@ type ServerReplicationConfig struct {
 	ReconnectBackoff time.Duration `yaml:"reconnect_backoff"`
 }
 
-// ServerWALConfig controls durable write-ahead logging and snapshots.
-// SegmentSizeMB is measured in MiB.
+// ServerWALConfig controls durable write-ahead logging and snapshots. SegmentSizeMB is measured in MiB.
 type ServerWALConfig struct {
 	Enabled          bool           `yaml:"enabled"`
 	DataDir          string         `yaml:"data_dir"`
@@ -58,9 +56,8 @@ type ServerWALConfig struct {
 	SnapshotInterval time.Duration  `yaml:"snapshot_interval"`
 }
 
-// ServerEngineConfig holds configuration for the database engine. Type is
-// "in_memory" (RAM-only) or "tiered" (memory/disk). The Tiered* fields apply
-// only to the tiered engine, which provides its own durability and therefore
+// ServerEngineConfig holds configuration for the database engine. Type is "in_memory" (RAM-only) or "tiered"
+// (memory/disk). The Tiered* fields apply only to the tiered engine, which provides its own durability and therefore
 // cannot be combined with the WAL or replication.
 type ServerEngineConfig struct {
 	Type                string         `yaml:"type"`
@@ -81,16 +78,15 @@ type ServerNetworkConfig struct {
 	IdleTimeout      time.Duration `yaml:"idle_timeout"`
 }
 
-// ServerLoggingConfig - logging configuration including log level and output destination.
-// Level can be "debug", "info", "warn", or "error". Output can be empty for stdout or a file path
+// ServerLoggingConfig - logging configuration including log level and output destination. Level can be "debug", "info",
+// "warn", or "error". Output can be empty for stdout or a file path
 type ServerLoggingConfig struct {
 	Level  string `yaml:"level"`
 	Output string `yaml:"output"`
 }
 
-// DefaultServerConfig returns a serverConfig instance with sensible default values.
-// This is used as a fallback when no configuration file is provided or when
-// certain configuration parameters are missing
+// DefaultServerConfig returns a serverConfig instance with sensible default values. This is used as a fallback when no
+// configuration file is provided or when certain configuration parameters are missing
 func DefaultServerConfig() *ServerConfig {
 	return &ServerConfig{
 		Engine: ServerEngineConfig{
@@ -127,8 +123,8 @@ func DefaultServerConfig() *ServerConfig {
 	}
 }
 
-// applyEnvOverrides overrides configuration values from DB_* environment
-// variables. Environment variables take precedence over file values
+// applyEnvOverrides overrides configuration values from DB_* environment variables. Environment variables take
+// precedence over file values
 func (c *ServerConfig) applyEnvOverrides() error {
 	if v := os.Getenv(envAddress); v != "" {
 		c.Network.Address = v
@@ -205,9 +201,8 @@ func (c *ServerConfig) Validate() error {
 	return c.Replication.validate(c.WAL.Enabled)
 }
 
-// validate checks engine settings. The tiered engine keeps its own durable
-// segment store, so it is mutually exclusive with the WAL and with replication
-// (which ships the WAL); enabling either alongside it is a configuration error.
+// validate checks engine settings. The tiered engine keeps its own durable segment store, so it is mutually exclusive
+// with the WAL and with replication (which ships the WAL); enabling either alongside it is a configuration error.
 func (c *ServerEngineConfig) validate(walEnabled bool, replicationRole string) error {
 	switch c.Type {
 	case engine.TypeInMemory:
@@ -252,8 +247,7 @@ func (c *ServerEngineConfig) validate(walEnabled bool, replicationRole string) e
 	return nil
 }
 
-// validate checks replication settings. Replication requires WAL persistence,
-// since the WAL is the replication stream.
+// validate checks replication settings. Replication requires WAL persistence, since the WAL is the replication stream.
 func (r *ServerReplicationConfig) validate(walEnabled bool) error {
 	switch r.Role {
 	case RoleStandalone:

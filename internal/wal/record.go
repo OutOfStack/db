@@ -20,6 +20,10 @@ const (
 	// CommandSet and CommandDel are the mutating operations accepted by the WAL.
 	CommandSet = "SET"
 	CommandDel = "DEL"
+
+	CommandIncr   = "INCR"
+	CommandAppend = "APPEND"
+	CommandHSet   = "HSET"
 )
 
 var (
@@ -36,16 +40,14 @@ type Record struct {
 	Args    []string
 }
 
-// EncodeRecord serializes a record to its on-disk/on-wire form (LSN, protocol
-// command, CRC32). Replication reuses this so the master ships the exact bytes a
-// standby persists to its own WAL.
+// EncodeRecord serializes a record to its on-disk/on-wire form (LSN, protocol command, CRC32). Replication reuses this
+// so the master ships the exact bytes a standby persists to its own WAL.
 func EncodeRecord(record Record) ([]byte, error) {
 	return encodeRecord(record)
 }
 
-// ReadRecord decodes a single record previously written by EncodeRecord. It is
-// used by standbys reading the master's replication stream. A partial or
-// checksum-invalid record returns ErrPartialRecord/ErrChecksum.
+// ReadRecord decodes a single record previously written by EncodeRecord. It is used by standbys reading the master's
+// replication stream. A partial or checksum-invalid record returns ErrPartialRecord/ErrChecksum.
 func ReadRecord(reader *bufio.Reader) (Record, error) {
 	return readRecord(reader)
 }
@@ -107,17 +109,19 @@ func readRecord(reader *bufio.Reader) (Record, error) {
 }
 
 func validateRecord(record Record) error {
+	var want int
 	switch record.Command {
-	case CommandSet:
-		if len(record.Args) != 3 {
-			return fmt.Errorf("invalid SET WAL record: got %d arguments", len(record.Args))
-		}
+	case CommandSet, CommandIncr, CommandAppend:
+		want = 3
 	case CommandDel:
-		if len(record.Args) != 2 {
-			return fmt.Errorf("invalid DEL WAL record: got %d arguments", len(record.Args))
-		}
+		want = 2
+	case CommandHSet:
+		want = 4
 	default:
 		return fmt.Errorf("invalid WAL record command %q", record.Command)
+	}
+	if len(record.Args) != want {
+		return fmt.Errorf("invalid %s WAL record: got %d arguments, want %d", record.Command, len(record.Args), want)
 	}
 	return nil
 }

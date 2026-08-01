@@ -30,6 +30,14 @@ func WriteSnapshot(ctx context.Context, dir string, lsn uint64, source SnapshotS
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
 
+	var written int
+	if written, err = temporary.WriteString(snapshotHeader); err == nil && written != len(snapshotHeader) {
+		err = io.ErrShortWrite
+	}
+	if err != nil {
+		_ = temporary.Close()
+		return fmt.Errorf("write snapshot header: %w", err)
+	}
 	if err = writeSnapshotRecords(ctx, temporary, source); err != nil {
 		_ = temporary.Close()
 		return err
@@ -106,20 +114,31 @@ func LoadLatestSnapshot(dir string, apply func(table, key, value string) error) 
 	defer func() { _ = file.Close() }()
 
 	reader := bufio.NewReader(file)
+	if err = ReadSnapshot(reader, apply); err != nil {
+		return 0, fmt.Errorf("read snapshot %s: %w", latest.path, err)
+	}
+	return latest.number, nil
+}
+
+// ReadSnapshot applies every record of a snapshot in order.
+func ReadSnapshot(reader *bufio.Reader, apply func(table, key, value string) error) error {
+	if err := consumeHeader(reader, snapshotHeader); err != nil {
+		return fmt.Errorf("read snapshot header: %w", err)
+	}
 	for {
 		command, args, readErr := protocol.ReadCommand(reader, maxRecordSize)
 		if errors.Is(readErr, io.EOF) {
 			break
 		}
 		if readErr != nil {
-			return 0, fmt.Errorf("read snapshot %s: %w", latest.path, readErr)
+			return readErr
 		}
 		if command != CommandSet || len(args) != 3 {
-			return 0, fmt.Errorf("invalid snapshot record %q with %d arguments", command, len(args))
+			return fmt.Errorf("invalid snapshot record %q with %d arguments", command, len(args))
 		}
-		if err = apply(args[0], args[1], args[2]); err != nil {
-			return 0, fmt.Errorf("apply snapshot: %w", err)
+		if err := apply(args[0], args[1], args[2]); err != nil {
+			return fmt.Errorf("apply snapshot: %w", err)
 		}
 	}
-	return latest.number, nil
+	return nil
 }

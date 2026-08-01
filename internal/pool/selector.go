@@ -8,13 +8,10 @@ import (
 
 // ServerSelector is responsible for selecting servers from the pool
 type ServerSelector interface {
-	// Select returns the next server to use, or nil if no servers available.
-	// It is equivalent to SelectRead and kept for backward compatibility.
-	Select() *ServerConfig
 	// SelectRead returns the next server for a read, following the strategy.
 	SelectRead() *ServerConfig
-	// SelectWrite returns the next master for a write, or nil if none available.
-	// Standbys are never returned: writes must reach a master.
+	// SelectWrite returns the next master for a write, or nil if none available. Standbys are never returned: writes must
+	// reach a master.
 	SelectWrite() *ServerConfig
 	// MarkFailed marks a server as failed
 	MarkFailed(address string)
@@ -44,7 +41,6 @@ func NewMasterFirstSelector(config *PoolConfig) *MasterFirstSelector {
 }
 
 // Select picks the next available server (master first, then standby)
-func (s *MasterFirstSelector) Select() *ServerConfig { return s.SelectRead() }
 
 // SelectRead picks the next available server (master first, then standby)
 func (s *MasterFirstSelector) SelectRead() *ServerConfig {
@@ -140,7 +136,6 @@ func NewRoundRobinSelector(config *PoolConfig) *RoundRobinSelector {
 }
 
 // Select picks the next server in round-robin order
-func (s *RoundRobinSelector) Select() *ServerConfig { return s.SelectRead() }
 
 // SelectRead picks the next server in round-robin order across all servers
 func (s *RoundRobinSelector) SelectRead() *ServerConfig {
@@ -156,8 +151,8 @@ func (s *RoundRobinSelector) SelectWrite() *ServerConfig {
 	return rotate(s.masters, &s.currentMaster, s.isFailed)
 }
 
-// rotate returns the next non-failed server from servers starting at *cursor,
-// advancing the cursor past the chosen server.
+// rotate returns the next non-failed server from servers starting at *cursor, advancing the cursor past the chosen
+// server.
 func rotate(servers []ServerConfig, cursor *int, isFailed func(string) bool) *ServerConfig {
 	for i := range servers {
 		idx := (*cursor + i) % len(servers)
@@ -220,7 +215,6 @@ func NewRandomSelector(config *PoolConfig) *RandomSelector {
 }
 
 // Select picks a random available server
-func (s *RandomSelector) Select() *ServerConfig { return s.SelectRead() }
 
 // SelectRead picks a random available server across all servers
 func (s *RandomSelector) SelectRead() *ServerConfig {

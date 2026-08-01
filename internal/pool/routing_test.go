@@ -12,8 +12,7 @@ import (
 	"github.com/OutOfStack/db/internal/protocol"
 )
 
-// startHandler runs an in-process server with a custom handler on an ephemeral
-// port and returns its address.
+// startHandler runs an in-process server with a custom handler on an ephemeral port and returns its address.
 func startHandler(t *testing.T, handler network.RequestHandler) string {
 	t.Helper()
 	srv, err := network.NewTCPServer("127.0.0.1:0", slog.New(slog.DiscardHandler))
@@ -50,8 +49,7 @@ func newPool(t *testing.T, servers []pool.ServerConfig, strategy pool.SelectionS
 	return client
 }
 
-// TestSelectWrite_OnlyMasters verifies every strategy's SelectWrite returns a
-// master, never a standby.
+// TestSelectWrite_OnlyMasters verifies every strategy's SelectWrite returns a master, never a standby.
 func TestSelectWrite_OnlyMasters(t *testing.T) {
 	t.Parallel()
 	config := &pool.PoolConfig{
@@ -77,8 +75,7 @@ func TestSelectWrite_OnlyMasters(t *testing.T) {
 	}
 }
 
-// TestClient_WritesSkipStandbys verifies writes route only to masters while
-// reads may use standbys.
+// TestClient_WritesSkipStandbys verifies writes route only to masters while reads may use standbys.
 func TestClient_WritesSkipStandbys(t *testing.T) {
 	t.Parallel()
 	var masterHits, standbyHits atomic.Int32
@@ -103,8 +100,8 @@ func TestClient_WritesSkipStandbys(t *testing.T) {
 	}
 }
 
-// TestClient_ReadOnlyFailover verifies an "ERR readonly" reply to a write marks
-// the server stale and reroutes to another master.
+// TestClient_ReadOnlyFailover verifies an "ERR readonly" reply to a write marks the server stale and reroutes to
+// another master.
 func TestClient_ReadOnlyFailover(t *testing.T) {
 	t.Parallel()
 	var goodHits atomic.Int32

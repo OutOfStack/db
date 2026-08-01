@@ -10,6 +10,7 @@ import (
 
 	"github.com/OutOfStack/db/internal/config"
 	"github.com/OutOfStack/db/internal/engine"
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/replication"
 	"github.com/OutOfStack/db/internal/storage"
 	"github.com/OutOfStack/db/internal/wal"
@@ -39,8 +40,8 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// TestPromoteServesReplication promotes a standby and verifies it both accepts
-// writes and serves replication to a downstream standby.
+// TestPromoteServesReplication promotes a standby and verifies it both accepts writes and serves replication to a
+// downstream standby.
 func TestPromoteServesReplication(t *testing.T) {
 	t.Parallel()
 	cfg := config.DefaultServerConfig()
@@ -95,7 +96,7 @@ func TestPromoteServesReplication(t *testing.T) {
 
 	waitFor(t, "downstream standby to replicate from promoted node", func() bool {
 		v, gErr := dsEngine.Get(context.Background(), "t", "k")
-		return gErr == nil && v == "v1"
+		return gErr == nil && stored(v) == "v1"
 	})
 }
 
@@ -142,7 +143,82 @@ func TestRecoverPersistenceSnapshotAndWALTail(t *testing.T) {
 		t.Fatalf("deleted key error = %v, want ErrNotFound", err)
 	}
 	value, err := recovered.Get(t.Context(), "users", "b")
-	if err != nil || value != "two" {
+	if err != nil || stored(value) != "two" {
 		t.Fatalf("recovered value = %q, %v; want two, nil", value, err)
+	}
+}
+
+func stored(value string) string {
+	return protocol.Render(protocol.Decode(value))
+}
+
+func TestRecoverPersistenceTypedValues(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultServerConfig()
+	cfg.WAL.Enabled = true
+	cfg.WAL.DataDir = t.TempDir()
+	cfg.WAL.Sync = wal.SyncAlways
+	cfg.WAL.SegmentSizeMB = 1
+	cfg.WAL.SnapshotInterval = time.Minute
+	logger := slog.New(slog.DiscardHandler)
+
+	dbEngine, writer, _, err := recoverPersistence(cfg, logger)
+	if err != nil {
+		t.Fatalf("initial recoverPersistence() error = %v", err)
+	}
+	store := storage.New(dbEngine, storage.WithWAL(writer))
+
+	commands := [][]string{
+		{"SET", "t", "conf", `{"a":[1,2],"b":"x"}`},
+		{"SET", "t", "name", "vlad"},
+		{"INCR", "t", "hits", "5"},
+		{"INCR", "t", "hits", "0.5"},
+		{"APPEND", "t", "log", "first"},
+		{"APPEND", "t", "log", "2"},
+		{"HSET", "t", "user", "name", "vlad"},
+		{"HSET", "t", "user", "age", "42"},
+		{"SET", "t", "big", "9223372036854775807"},
+		// Both fail after they are already durable, so recovery has to replay them as the no-ops they were instead of
+		// refusing to start.
+		{"INCR", "t", "name"}, // wrong type
+		{"INCR", "t", "big"},  // int64 overflow
+	}
+	for _, command := range commands {
+		if _, err = store.Execute(t.Context(), command[0], command[1:]); err != nil && command[0] != "INCR" {
+			t.Fatalf("%v: %v", command, err)
+		}
+	}
+	if _, err = createSnapshot(t.Context(), cfg.WAL.DataDir, store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Execute(t.Context(), "APPEND", []string{"t", "log", "true"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, recoveredWriter, _, err := recoverPersistence(cfg, logger)
+	if err != nil {
+		t.Fatalf("recoverPersistence() error = %v", err)
+	}
+	defer func() { _ = recoveredWriter.Close() }()
+
+	want := map[string]string{
+		"conf": `{"a":[1,2],"b":"x"}`,
+		"name": "vlad",
+		"hits": "5.5",
+		"log":  `["first",2,true]`,
+		"user": `{"age":42,"name":"vlad"}`,
+		"big":  "9223372036854775807",
+	}
+	for key, wantValue := range want {
+		value, gErr := recovered.Get(t.Context(), "t", key)
+		if gErr != nil {
+			t.Fatalf("recovered Get(%s) error = %v", key, gErr)
+		}
+		if got := stored(value); got != wantValue {
+			t.Errorf("recovered t/%s = %s, want %s", key, got, wantValue)
+		}
 	}
 }

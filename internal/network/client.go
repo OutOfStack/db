@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/OutOfStack/db/internal/protocol"
@@ -86,14 +85,12 @@ func (tc *TCPClient) sendWithRetry(cmd string, args []string, allowRetry bool) (
 	return resp, nil
 }
 
-// handleReadError recovers from a failed reply read: connection errors are
-// retried once on a fresh connection; decode errors drop the connection
-// because unread reply bytes may remain on the wire and would otherwise be
-// read as the next command's reply
+// handleReadError recovers from a failed reply read: connection errors are retried once on a fresh connection; decode
+// errors drop the connection because unread reply bytes may remain on the wire and would otherwise be read as the next
+// command's reply
 func (tc *TCPClient) handleReadError(cmd string, args []string, err error, allowRetry bool) (protocol.Reply, error) {
 	if !tc.isConnectionError(err) {
-		// reconnect eagerly; if that fails the connection is still closed
-		// and the next Send re-dials via its own retry path
+		// reconnect eagerly; if that fails the connection is still closed and the next Send re-dials via its own retry path
 		_ = tc.reconnect()
 		return protocol.Reply{}, fmt.Errorf("failed to read response: %w", err)
 	}
@@ -136,11 +133,7 @@ func (tc *TCPClient) isConnectionError(err error) bool {
 		}
 	}
 
-	// fallback to string matching for compatibility
-	errStr := err.Error()
-	return strings.Contains(errStr, "broken pipe") ||
-		strings.Contains(errStr, "connection reset") ||
-		strings.Contains(errStr, "connection refused")
+	return false
 }
 
 // reconnect attempts to establish a new connection to the server

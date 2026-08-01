@@ -20,9 +20,8 @@ type ClientNetworkConfig struct {
 	IdleTimeout      time.Duration `yaml:"idle_timeout"`
 }
 
-// DefaultClientConfig returns a ClientConfig instance with sensible default values.
-// This is used as a fallback when no configuration file is provided or when
-// certain configuration parameters are missing
+// DefaultClientConfig returns a ClientConfig instance with sensible default values. This is used as a fallback when no
+// configuration file is provided or when certain configuration parameters are missing
 func DefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
 		Network: ClientNetworkConfig{

@@ -59,6 +59,13 @@ func main() {
 	fmt.Println("  TABLES")
 	fmt.Println("  EXISTS table")
 	fmt.Println("  KEYS table")
+	fmt.Println("  TYPE table key")
+	fmt.Println("  INCR table key [delta]")
+	fmt.Println("  APPEND table key value")
+	fmt.Println("  HSET table key field value")
+	fmt.Println("  HGET table key field")
+	fmt.Println("Values are typed: 42 int, 42.5 float, true bool, [1,2] array, {\"a\":1} map, anything else string")
+	fmt.Println("Wrap a literal in single quotes when it contains quotes, spaces or backslashes: SET t conf '{\"a\":1}'")
 	fmt.Println("Type 'exit' to quit")
 	fmt.Println()
 
@@ -75,7 +82,7 @@ func main() {
 			break
 		}
 
-		if input == "" {
+		if input == "" || strings.HasPrefix(input, "#") {
 			continue
 		}
 

@@ -7,3 +7,6 @@ type Transport = transport
 func NewWithTransport(t Transport) *Client {
 	return &Client{transport: t}
 }
+
+// SplitCommandLine exposes the CLI line splitter for testing.
+func SplitCommandLine(command string) ([]string, error) { return splitCommandLine(command) }

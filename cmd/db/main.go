@@ -28,8 +28,8 @@ func main() {
 	os.Exit(execute())
 }
 
-// execute runs the server and returns a process exit code. It is separate from
-// main so deferred cleanup (e.g. closing the log file) runs before os.Exit.
+// execute runs the server and returns a process exit code. It is separate from main so deferred cleanup (e.g. closing
+// the log file) runs before os.Exit.
 func execute() int {
 	var configPath string
 	flag.StringVar(&configPath, "config", "", "Path to configuration file")
@@ -84,8 +84,8 @@ func run(cfg *config.ServerConfig, logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	// Only the tiered engine holds resources; the in-memory one is not an
-	// io.Closer. Deferred so an early return below still flushes it.
+	// Only the tiered engine holds resources; the in-memory one is not an io.Closer. Deferred so an early return below
+	// still flushes it.
 	if closer, ok := dbEngine.(io.Closer); ok {
 		defer func() { _ = closer.Close() }()
 	}
@@ -97,8 +97,8 @@ func run(cfg *config.ServerConfig, logger *slog.Logger) error {
 	if walWriter != nil {
 		options = append(options, storage.WithWAL(walWriter))
 	}
-	// A standby starts read-only: client writes are rejected until PROMOTE, while
-	// replication applies the master's log directly to the engine.
+	// A standby starts read-only: client writes are rejected until PROMOTE, while replication applies the master's log
+	// directly to the engine.
 	if cfg.Replication.Role == config.RoleStandby {
 		options = append(options, storage.WithReadOnly(true))
 	}
@@ -117,9 +117,8 @@ func run(cfg *config.ServerConfig, logger *slog.Logger) error {
 	return serve(cfg, logger, comp, store, walWriter, repl, snapshotLSN)
 }
 
-// buildEngine constructs the configured storage engine. The tiered engine keeps
-// its own durable segment store (no WAL); the in-memory engine recovers from the
-// WAL/snapshot when persistence is enabled, and so returns a writer and the LSN
+// buildEngine constructs the configured storage engine. The tiered engine keeps its own durable segment store (no WAL);
+// the in-memory engine recovers from the WAL/snapshot when persistence is enabled, and so returns a writer and the LSN
 // to resume from.
 func buildEngine( //nolint:ireturn // returns the configured engine (in-memory or tiered) behind storage.Engine
 	cfg *config.ServerConfig,
@@ -168,7 +167,7 @@ func recoverPersistence(
 	dbEngine.Load(context.Background(), entries)
 
 	lastLSN, err := wal.NewReader(cfg.WAL.DataDir, logger).Replay(snapshotLSN, func(record wal.Record) error {
-		return applyRecoveredRecord(dbEngine, record)
+		return storage.ApplyReplay(context.Background(), dbEngine, record.Command, record.Args)
 	})
 	if err != nil {
 		return nil, nil, 0, fmt.Errorf("replay WAL: %w", err)
@@ -183,21 +182,6 @@ func recoverPersistence(
 	}
 	logger.Info("Persistence recovered", "snapshot_lsn", snapshotLSN, "last_lsn", lastLSN)
 	return dbEngine, writer, snapshotLSN, nil
-}
-
-func applyRecoveredRecord(dbEngine *engine.Engine, record wal.Record) error {
-	switch record.Command {
-	case wal.CommandSet:
-		return dbEngine.Set(context.Background(), record.Args[0], record.Args[1], record.Args[2])
-	case wal.CommandDel:
-		err := dbEngine.Del(context.Background(), record.Args[0], record.Args[1])
-		if errors.Is(err, engine.ErrNotFound) {
-			return nil
-		}
-		return err
-	default:
-		return fmt.Errorf("unsupported WAL command %q", record.Command)
-	}
 }
 
 func serve(
@@ -224,9 +208,8 @@ func serve(
 		defer close(serverDone)
 		srv.Start(ctx, requestHandler(comp))
 	}()
-	// Snapshots run for every role: a standby applies replicated records through
-	// the storage layer under the same lock a snapshot takes, so its snapshots
-	// are consistent, and this keeps a promoted node's WAL bounded.
+	// Snapshots run for every role: a standby applies replicated records through the storage layer under the same lock a
+	// snapshot takes, so its snapshots are consistent, and this keeps a promoted node's WAL bounded.
 	snapshotDone := startSnapshotLoop(ctx, cfg, logger, store, walWriter, recoveredSnapshotLSN)
 	replDone := startReplication(ctx, logger, repl)
 

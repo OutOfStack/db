@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -101,8 +103,8 @@ func TestIntrospection(t *testing.T) {
 	}
 }
 
-// TestEvictionServesFromDisk forces constant eviction with a tiny memory budget
-// and verifies every value is still readable (from disk on a miss).
+// TestEvictionServesFromDisk forces constant eviction with a tiny memory budget and verifies every value is still
+// readable (from disk on a miss).
 func TestEvictionServesFromDisk(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	cfg.MaxMemoryBytes = 64 // only ~1 value fits in RAM at a time
@@ -190,8 +192,8 @@ func TestRecovery(t *testing.T) {
 	}
 }
 
-// TestCompactionReclaimsDisk overwrites one key across many sealed segments,
-// then compacts and checks the dataset is intact and disk usage dropped.
+// TestCompactionReclaimsDisk overwrites one key across many sealed segments, then compacts and checks the dataset is
+// intact and disk usage dropped.
 func TestCompactionReclaimsDisk(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	cfg.SegmentSize = 256 // tiny segments so overwrites roll and seal quickly
@@ -226,11 +228,9 @@ func TestCompactionReclaimsDisk(t *testing.T) {
 	}
 }
 
-// TestCompactionKeepsTombstoneAboveLiveSegment pins the resurrection case: the
-// tombstone sits in a compactible segment while the value it buried is in an
-// older segment that stays live. Dropping the tombstone with its segment would
-// leave the old SET as the newest record for that key, and recovery would bring
-// the key back.
+// TestCompactionKeepsTombstoneAboveLiveSegment pins the resurrection case: the tombstone sits in a compactible segment
+// while the value it buried is in an older segment that stays live. Dropping the tombstone with its segment would leave
+// the old SET as the newest record for that key, and recovery would bring the key back.
 func TestCompactionKeepsTombstoneAboveLiveSegment(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
@@ -243,8 +243,8 @@ func TestCompactionKeepsTombstoneAboveLiveSegment(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = e.Close() })
 
-	// Segment 1: the victim plus filler that is never overwritten, so the segment
-	// stays fully live and is never itself compacted.
+	// Segment 1: the victim plus filler that is never overwritten, so the segment stays fully live and is never itself
+	// compacted.
 	if err = e.Set(ctx, "t", "victim", "buried"); err != nil {
 		t.Fatal(err)
 	}
@@ -282,9 +282,8 @@ func TestCompactionKeepsTombstoneAboveLiveSegment(t *testing.T) {
 	}
 }
 
-// TestRestartAfterCompaction reopens the data directory without closing the
-// engine (a crash right after a compaction pass): the rewritten records must be
-// on disk, since compaction already deleted the segment they came from.
+// TestRestartAfterCompaction reopens the data directory without closing the engine (a crash right after a compaction
+// pass): the rewritten records must be on disk, since compaction already deleted the segment they came from.
 func TestRestartAfterCompaction(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
@@ -295,8 +294,8 @@ func TestRestartAfterCompaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Closed only at teardown, after the reopened engine has been asserted, so
-	// its sync cannot stand in for the one compaction owes.
+	// Closed only at teardown, after the reopened engine has been asserted, so its sync cannot stand in for the one
+	// compaction owes.
 	t.Cleanup(func() { _ = e.Close() })
 	for i := range 20 {
 		if err = e.Set(ctx, "t", fmt.Sprintf("k%02d", i), fmt.Sprintf("value-%02d", i)); err != nil {
@@ -324,8 +323,8 @@ func TestRestartAfterCompaction(t *testing.T) {
 	}
 }
 
-// TestOversizedValueStaysDiskOnly checks max_memory is a real ceiling: a value
-// bigger than the whole budget is served from disk, never cached.
+// TestOversizedValueStaysDiskOnly checks max_memory is a real ceiling: a value bigger than the whole budget is served
+// from disk, never cached.
 func TestOversizedValueStaysDiskOnly(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	cfg.MaxMemoryBytes = 128
@@ -355,8 +354,8 @@ func TestOversizedValueStaysDiskOnly(t *testing.T) {
 	}
 }
 
-// TestParityWithInMemory runs the same random workload against the tiered engine
-// (with constant eviction) and the plain in-memory engine; GET results must match.
+// TestParityWithInMemory runs the same random workload against the tiered engine (with constant eviction) and the plain
+// in-memory engine; GET results must match.
 func TestParityWithInMemory(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	cfg.MaxMemoryBytes = 128
@@ -405,8 +404,8 @@ func assertSameGet(t *testing.T, tieredEngine *tiered.Engine, memEngine *engine.
 	}
 }
 
-// TestRecoveryTruncatesTornTail simulates a crash mid-write: garbage bytes are
-// appended to the last segment. Recovery must truncate them and keep prior data.
+// TestRecoveryTruncatesTornTail simulates a crash mid-write: garbage bytes are appended to the last segment. Recovery
+// must truncate them and keep prior data.
 func TestRecoveryTruncatesTornTail(t *testing.T) {
 	dir := t.TempDir()
 	cfg := testConfig(dir)
@@ -459,8 +458,8 @@ func lastSegment(t *testing.T, dir string) string {
 	return matches[len(matches)-1]
 }
 
-// TestConcurrentWritesAndCompaction exercises writes racing compaction under the
-// engine lock. Run with -race in CI; here it asserts final-state correctness.
+// TestConcurrentWritesAndCompaction exercises writes racing compaction under the engine lock. Run with -race in CI;
+// here it asserts final-state correctness.
 func TestConcurrentWritesAndCompaction(t *testing.T) {
 	cfg := testConfig(t.TempDir())
 	cfg.SegmentSize = 512
@@ -513,5 +512,100 @@ func TestBackgroundLoopsStartAndStop(t *testing.T) {
 	time.Sleep(30 * time.Millisecond) // let the loops run at least once
 	if err = e.Close(); err != nil {
 		t.Fatalf("close: %v", err)
+	}
+}
+
+func TestUpdateReadsThroughToDisk(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+	cfg.MaxMemoryBytes = 64 // only ~1 value fits in RAM at a time
+	e := open(t, cfg)
+	ctx := context.Background()
+
+	if err := e.Set(ctx, "t", "counter", "1"); err != nil {
+		t.Fatal(err)
+	}
+	// Push the counter out of the cache. The filler must fit the budget itself: a value larger than the whole budget is
+	// never admitted, so it would evict nothing.
+	for i := range 50 {
+		if err := e.Set(ctx, "t", fmt.Sprintf("filler%d", i), strings.Repeat("x", 5)); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := e.Update(ctx, "t", "counter", func(old string, exists bool) (string, error) {
+		if !exists || old != "1" {
+			t.Fatalf("update saw old=%q exists=%v, want the stored value", old, exists)
+		}
+		return "2", nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustGet(t, e, "t", "counter"); got != "2" {
+		t.Fatalf("counter = %q, want 2", got)
+	}
+	if s := e.Stats(); s.Misses == 0 {
+		t.Fatal("expected the update to read through to disk")
+	}
+}
+
+func TestUpdateIsAtomic(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	e, err := tiered.Open(cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	const n = 100
+	var wg sync.WaitGroup
+	for range n {
+		wg.Go(func() {
+			uErr := e.Update(ctx, "t", "counter", func(old string, exists bool) (string, error) {
+				count := 0
+				if exists {
+					var pErr error
+					if count, pErr = strconv.Atoi(old); pErr != nil {
+						return "", pErr
+					}
+				}
+				return strconv.Itoa(count + 1), nil
+			})
+			if uErr != nil {
+				t.Errorf("update: %v", uErr)
+			}
+		})
+	}
+	wg.Wait()
+	if err = e.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened := open(t, cfg)
+	if got := mustGet(t, reopened, "t", "counter"); got != strconv.Itoa(n) {
+		t.Fatalf("counter after reopen = %q, want %d (lost updates)", got, n)
+	}
+}
+
+func TestUpdateErrorAppendsNothing(t *testing.T) {
+	cfg := testConfig(t.TempDir())
+	e := open(t, cfg)
+	ctx := context.Background()
+
+	if err := e.Set(ctx, "t", "k", "v"); err != nil {
+		t.Fatal(err)
+	}
+	before := e.Stats().DiskBytes
+
+	wantErr := errors.New("rejected")
+	if err := e.Update(ctx, "t", "k", func(string, bool) (string, error) { return "new", wantErr }); !errors.Is(err, wantErr) {
+		t.Fatalf("Update error = %v, want %v", err, wantErr)
+	}
+	if got := mustGet(t, e, "t", "k"); got != "v" {
+		t.Fatalf("value = %q, want the original", got)
+	}
+	if after := e.Stats().DiskBytes; after != before {
+		t.Fatalf("disk grew by %d bytes on a rejected update", after-before)
 	}
 }

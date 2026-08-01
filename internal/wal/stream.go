@@ -1,16 +1,13 @@
 package wal
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
-	"os"
 )
 
-// OldestRecordLSN returns the LSN of the oldest record still retained on disk.
-// It is the first LSN of the earliest WAL segment; when no segments exist it
-// returns fallback (the caller passes LastLSN+1, meaning "nothing on disk").
+// OldestRecordLSN returns the LSN of the oldest record still retained on disk. It is the first LSN of the earliest WAL
+// segment; when no segments exist it returns fallback (the caller passes LastLSN+1, meaning "nothing on disk").
 func OldestRecordLSN(dir string, fallback uint64) (uint64, error) {
 	segments, err := listNumberedFiles(dir, walPrefix, walSuffix)
 	if err != nil {
@@ -22,8 +19,7 @@ func OldestRecordLSN(dir string, fallback uint64) (uint64, error) {
 	return segments[0].number, nil
 }
 
-// LatestSnapshotInfo returns the LSN and path of the newest snapshot on disk.
-// ok is false when no snapshot exists.
+// LatestSnapshotInfo returns the LSN and path of the newest snapshot on disk. ok is false when no snapshot exists.
 func LatestSnapshotInfo(dir string) (lsn uint64, path string, ok bool, err error) {
 	snapshots, err := listNumberedFiles(dir, snapshotPrefix, snapshotSuffix)
 	if err != nil {
@@ -36,12 +32,10 @@ func LatestSnapshotInfo(dir string) (lsn uint64, path string, ok bool, err error
 	return latest.number, latest.path, true, nil
 }
 
-// ReadRecordsFrom streams records with LSN >= fromLSN from the on-disk segments
-// to fn, in LSN order. It is used by the replication master to catch a standby
-// up from segment files. Because the master appends concurrently, a partial or
-// checksum-invalid record at the tail of the final segment is treated as a
-// half-written live record and ends iteration cleanly (the caller streams the
-// rest from the live fan-out); the same damage in an earlier segment is an error.
+// ReadRecordsFrom streams records with LSN >= fromLSN from the on-disk segments to fn, in LSN order. It is used by the
+// replication master to catch a standby up from segment files. Because the master appends concurrently, a partial or
+// checksum-invalid record at the tail of the final segment is treated as a half-written live record and ends iteration
+// cleanly (the caller streams the rest from the live fan-out); the same damage in an earlier segment is an error.
 func ReadRecordsFrom(dir string, fromLSN uint64, fn func(Record) error) error {
 	segments, err := listNumberedFiles(dir, walPrefix, walSuffix)
 	if err != nil {
@@ -57,13 +51,12 @@ func ReadRecordsFrom(dir string, fromLSN uint64, fn func(Record) error) error {
 }
 
 func readSegmentRecords(segment numberedFile, isLast bool, fromLSN uint64, fn func(Record) error) error {
-	file, err := os.Open(segment.path)
+	file, reader, err := openWALSegment(segment.path)
 	if err != nil {
 		return fmt.Errorf("open WAL segment %s: %w", segment.path, err)
 	}
 	defer func() { _ = file.Close() }()
 
-	reader := bufio.NewReader(file)
 	for {
 		record, readErr := readRecord(reader)
 		if errors.Is(readErr, io.EOF) {

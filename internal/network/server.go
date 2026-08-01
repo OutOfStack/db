@@ -19,9 +19,8 @@ const (
 	defaultMaxMessageSize = 4096
 	defaultTimeout        = 1 * time.Minute
 
-	// errorDrainTimeout bounds draining of unread request bytes before closing
-	// a connection after a protocol error, so the error reply is not lost to a
-	// TCP reset caused by closing with pending input
+	// errorDrainTimeout bounds draining of unread request bytes before closing a connection after a protocol error, so the
+	// error reply is not lost to a TCP reset caused by closing with pending input
 	errorDrainTimeout = 100 * time.Millisecond
 )
 
@@ -39,8 +38,8 @@ type TCPServer struct {
 	maxMessageSize int
 }
 
-// NewTCPServer creates a new Server instance with the given configuration and logger.
-// It initializes the server with default values and sets up connection management.
+// NewTCPServer creates a new Server instance with the given configuration and logger. It initializes the server with
+// default values and sets up connection management.
 func NewTCPServer(address string, logger *slog.Logger, options ...TCPServerOption) (*TCPServer, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -148,8 +147,8 @@ func (s *TCPServer) handleConnection(ctx context.Context, conn net.Conn, handler
 				s.logger.Error("Failed to send protocol error", "error", wErr)
 				return
 			}
-			// drain pending request bytes briefly: closing with unread input
-			// can trigger a TCP reset that discards the queued error reply
+			// drain pending request bytes briefly: closing with unread input can trigger a TCP reset that discards the queued
+			// error reply
 			if dErr := conn.SetReadDeadline(time.Now().Add(errorDrainTimeout)); dErr == nil {
 				_, _ = io.Copy(io.Discard, reader)
 			}

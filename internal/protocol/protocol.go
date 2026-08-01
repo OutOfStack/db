@@ -59,9 +59,8 @@ func BulkStringArray(values []string) Reply {
 	return Array(replies)
 }
 
-// CommandSize returns the exact number of bytes WriteCommand emits for cmd/args.
-// It lets callers reject an over-limit command before writing it, matching the
-// cumulative-byte limit ReadCommand enforces on the way back in.
+// CommandSize returns the exact number of bytes WriteCommand emits for cmd/args. It lets callers reject an over-limit
+// command before writing it, matching the cumulative-byte limit ReadCommand enforces on the way back in.
 func CommandSize(cmd string, args []string) int {
 	size := 1 + intWidth(len(args)+1) + 2 // *<count>\r\n
 	size += bulkStringSize(cmd)
@@ -270,9 +269,8 @@ func readBulkStringBody(r *bufio.Reader, lenText string, maxMessageSize int, rea
 	if n < -1 {
 		return "", false, errors.New("invalid negative bulk string length")
 	}
-	// overflow-safe size check: n is non-negative here, so compare against the
-	// remaining budget instead of computing *read+n+2, which can overflow for
-	// lengths near math.MaxInt and bypass the limit.
+	// overflow-safe size check: n is non-negative here, so compare against the remaining budget instead of computing
+	// *read+n+2, which can overflow for lengths near math.MaxInt and bypass the limit.
 	if maxMessageSize > 0 && n > maxMessageSize-*read-2 {
 		return "", false, errors.New("message size exceeds limit")
 	}
@@ -313,15 +311,16 @@ func readLine(r *bufio.Reader, maxMessageSize int, read *int) (string, error) {
 	return string(out[:len(out)-2]), nil
 }
 
-// minArrayElemSize is the smallest possible wire encoding of one array element (e.g. "+\r\n"), used to bound declared array lengths.
-// maxPreallocElems caps slice preallocation so a declared length cannot force a huge allocation before any element is read.
+// minArrayElemSize is the smallest possible wire encoding of one array element (e.g. "+\r\n"), used to bound declared
+// array lengths. maxPreallocElems caps slice preallocation so a declared length cannot force a huge allocation before
+// any element is read.
 const (
 	minArrayElemSize = 3
 	maxPreallocElems = 1024
 )
 
-// checkArrayLen rejects array lengths that could not possibly be encoded
-// within maxMessageSize, before any per-element allocation happens
+// checkArrayLen rejects array lengths that could not possibly be encoded within maxMessageSize, before any per-element
+// allocation happens
 func checkArrayLen(count, maxMessageSize int) error {
 	if maxMessageSize > 0 && count > maxMessageSize/minArrayElemSize {
 		return errors.New("message size exceeds limit")
@@ -329,7 +328,8 @@ func checkArrayLen(count, maxMessageSize int) error {
 	return nil
 }
 
-// sanitizeLine makes a value safe for line-based RESP types (simple strings and errors), which must not contain CR or LF
+// sanitizeLine makes a value safe for line-based RESP types (simple strings and errors), which must not contain CR or
+// LF
 func sanitizeLine(value string) string {
 	if !strings.ContainsAny(value, "\r\n") {
 		return value

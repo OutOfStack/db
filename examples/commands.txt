@@ -1,7 +1,11 @@
-# Example commands for the Simple DB service
-# Keys are scoped by table: SET <table> <key> <value>
+# Example commands for the Simple DB service. Pipe this file into the CLI to run it:
+#
+#   ./bin/db-cli < examples/commands.txt
+#
+# Comments must be on their own line: the CLI skips those, but anything after a command on the same line is parsed as
+# another argument.
 
-# Basic operations
+# Basic operations. Keys are scoped by table.
 SET users name John
 GET users name
 
@@ -9,20 +13,63 @@ GET users name
 DEL users name
 GET users name
 
-# Special characters
+# Values with special characters
 SET files path/to/file.txt /home/user/documents/file.txt
 GET files path/to/file.txt
 
+# Values are typed by their literal syntax, and TYPE reports what a key holds.
+SET types text 'hello world'
+SET types count 42
+SET types ratio 42.5
+SET types active true
+SET types tags [1,2,3]
+TYPE types text
+TYPE types count
+TYPE types ratio
+TYPE types active
+TYPE types tags
+
+# The CLI strips quotes while splitting a line, so a literal containing quotes or spaces has to be wrapped in single
+# quotes.
+SET types conf '{"a":1,"b":"x"}'
+GET types conf
+SET types zip '"01234"'
+TYPE types zip
+
+# Counters. A missing key starts at 0, and the delta defaults to 1.
+INCR stats hits
+INCR stats hits 10
+INCR stats hits 0.5
+GET stats hits
+
+# Arrays: APPEND returns the new length.
+APPEND events log first
+APPEND events log 2
+GET events log
+
+# Maps: HSET writes one field, HGET reads one back.
+HSET users u1 name John
+HSET users u1 age 42
+HGET users u1 age
+GET users u1
+
 # Introspection
-TABLES                 # list all tables
-EXISTS users           # does the table exist
-KEYS users             # list keys in a table
+TABLES
+EXISTS users
+KEYS users
 
-# Replication (master/standby)
-REPLICATION STATUS     # role, applied LSN, lag, connection state
-PROMOTE                # promote a standby to master
+# Replication (master/standby): role, applied LSN, lag, connection state
+REPLICATION STATUS
+# Promote a standby to master
+PROMOTE
 
-# Invalid commands
-SET users name         # Missing value
-GET users name extra   # Too many args
-UNKNOWN foo            # Unknown command
+# Errors: each of these is rejected and changes nothing. Missing value
+SET users name
+# Too many arguments
+GET users name extra
+# Unknown command
+UNKNOWN foo
+# Wrong type for the operation
+INCR events log
+# Malformed map literal
+SET types broken '{"a":'

@@ -1,16 +1,14 @@
-// Package replication implements master/standby log shipping. The master streams
-// its write-ahead log to standbys, which persist and apply it in order and serve
-// reads. Replication is asynchronous: the master acknowledges clients without
+// Package replication implements master/standby log shipping. The master streams its write-ahead log to standbys, which
+// persist and apply it in order and serve reads. Replication is asynchronous: the master acknowledges clients without
 // waiting for standbys. Failover is manual via the PROMOTE admin command.
 //
-// The wire protocol runs on a dedicated master listener, separate from the
-// client-facing TCP server. A standby opens a connection and sends a single
-// RESP command handshake:
+// The wire protocol runs on a dedicated master listener, separate from the client-facing TCP server. A standby opens a
+// connection and sends a single RESP command handshake:
 //
 //	REPLICATE <lsn>
 //
-// where <lsn> is the highest LSN the standby has already applied. The master
-// then streams framed messages, each prefixed by a one-byte frame type:
+// where <lsn> is the highest LSN the standby has already applied. The master then streams framed messages, each
+// prefixed by a one-byte frame type:
 //
 //	'R' record    — a WAL record (wal.EncodeRecord bytes; self-delimiting)
 //	'S' snapshot  — resync payload: 8-byte LSN, 8-byte length, then that many
@@ -84,8 +82,8 @@ func writeHeartbeatFrame(w io.Writer, lastLSN uint64) error {
 	return err
 }
 
-// writeSnapshotFrame streams a snapshot blob of the given byte length. The body
-// is copied from src (typically a snapshot file) after the header.
+// writeSnapshotFrame streams a snapshot blob of the given byte length. The body is copied from src (typically a
+// snapshot file) after the header.
 func writeSnapshotFrame(w io.Writer, lsn uint64, length int64, src io.Reader) error {
 	if length < 0 {
 		return fmt.Errorf("negative snapshot length %d", length)
