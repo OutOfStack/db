@@ -45,7 +45,7 @@ func WriteSnapshot(ctx context.Context, dir string, lsn uint64, source SnapshotS
 	if err = os.Rename(temporaryName, target); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
-	if err = syncDirectory(dir); err != nil {
+	if err = SyncDirectory(dir); err != nil {
 		return fmt.Errorf("sync snapshot directory: %w", err)
 	}
 
@@ -83,7 +83,7 @@ func removeOldSnapshots(dir string, lsn uint64) error {
 			}
 		}
 	}
-	if err = syncDirectory(dir); err != nil {
+	if err = SyncDirectory(dir); err != nil {
 		return fmt.Errorf("sync snapshot cleanup: %w", err)
 	}
 	return nil

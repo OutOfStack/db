@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"github.com/OutOfStack/db/internal/compute"
 	"github.com/OutOfStack/db/internal/config"
 	"github.com/OutOfStack/db/internal/engine"
+	"github.com/OutOfStack/db/internal/engine/tiered"
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/parser"
 	"github.com/OutOfStack/db/internal/protocol"
@@ -78,9 +80,14 @@ func newLogger(cfg config.ServerLoggingConfig) (*slog.Logger, func() error, erro
 }
 
 func run(cfg *config.ServerConfig, logger *slog.Logger) error {
-	dbEngine, walWriter, snapshotLSN, err := recoverPersistence(cfg, logger)
+	dbEngine, walWriter, snapshotLSN, err := buildEngine(cfg, logger)
 	if err != nil {
 		return err
+	}
+	// Only the tiered engine holds resources; the in-memory one is not an
+	// io.Closer. Deferred so an early return below still flushes it.
+	if closer, ok := dbEngine.(io.Closer); ok {
+		defer func() { _ = closer.Close() }()
 	}
 	if walWriter != nil {
 		defer func() { _ = walWriter.Close() }() // the coordinated shutdown below reports the first close error
@@ -108,6 +115,37 @@ func run(cfg *config.ServerConfig, logger *slog.Logger) error {
 	}
 	comp := compute.New(parser.New(), store, logger, computeOptions...)
 	return serve(cfg, logger, comp, store, walWriter, repl, snapshotLSN)
+}
+
+// buildEngine constructs the configured storage engine. The tiered engine keeps
+// its own durable segment store (no WAL); the in-memory engine recovers from the
+// WAL/snapshot when persistence is enabled, and so returns a writer and the LSN
+// to resume from.
+func buildEngine( //nolint:ireturn // returns the configured engine (in-memory or tiered) behind storage.Engine
+	cfg *config.ServerConfig,
+	logger *slog.Logger,
+) (storage.Engine, *wal.Writer, uint64, error) {
+	if cfg.Engine.Type == engine.TypeTiered {
+		tieredEngine, err := tiered.Open(tieredConfig(cfg.Engine), logger)
+		if err != nil {
+			return nil, nil, 0, fmt.Errorf("open tiered engine: %w", err)
+		}
+		return tieredEngine, nil, 0, nil
+	}
+	return recoverPersistence(cfg, logger)
+}
+
+func tieredConfig(cfg config.ServerEngineConfig) tiered.Config {
+	const mib = 1 << 20
+	return tiered.Config{
+		Dir:                 cfg.DataDir,
+		MaxMemoryBytes:      cfg.MaxMemoryMB * mib,
+		MaxStorageBytes:     cfg.MaxStorageMB * mib,
+		SegmentSize:         cfg.SegmentSizeMB * mib,
+		Sync:                cfg.Sync,
+		CompactionThreshold: cfg.CompactionThreshold,
+		CompactionInterval:  cfg.CompactionInterval,
+	}
 }
 
 func recoverPersistence(

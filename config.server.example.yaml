@@ -2,7 +2,20 @@
 # Copy this to config.yaml and modify as needed
 
 engine:
-  type: "in_memory"
+  type: "in_memory"          # "in_memory" (RAM-only) or "tiered" (memory/disk)
+
+  # The "tiered" engine lets the dataset grow beyond RAM: an append-only on-disk
+  # segment store is the source of truth, a full in-memory keydir indexes every
+  # key, and an LRU cache holds hot values. It provides its own durability, so it
+  # cannot be combined with wal.enabled or replication. The fields below apply
+  # only when type is "tiered".
+  data_dir: "data"           # directory for the tiered segment store
+  max_memory: 64             # MiB of hot values kept in RAM (LRU budget)
+  max_storage: 1024          # MiB ceiling on live data; SET returns "ERR storage full" beyond it
+  sync: "everysec"           # always, everysec, or no
+  segment_size: 64           # MiB per segment file
+  compaction_threshold: 0.5  # reclaim a sealed segment once this fraction is dead bytes
+  compaction_interval: 30s   # how often to compact and log cache/disk stats
 
 # WAL is disabled by default for backward compatibility.
 wal:

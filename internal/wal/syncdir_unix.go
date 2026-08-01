@@ -4,7 +4,9 @@ package wal
 
 import "os"
 
-func syncDirectory(path string) error {
+// SyncDirectory fsyncs a directory so entries created in it (a new segment
+// file) survive a crash, not just the file contents.
+func SyncDirectory(path string) error {
 	// #nosec G304 -- path is the operator-configured WAL directory
 	directory, err := os.Open(path)
 	if err != nil {
