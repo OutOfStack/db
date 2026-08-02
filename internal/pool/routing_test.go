@@ -75,8 +75,56 @@ func TestSelectWrite_OnlyMasters(t *testing.T) {
 	}
 }
 
-// TestClient_WritesSkipStandbys verifies writes route only to masters while reads may use standbys.
+// TestClient_WritesSkipStandbys verifies every mutating command routes only to masters while reads may use standbys.
+// Round-robin is the strategy that exposes a misclassified mutation: master_first would send it to a master anyway.
 func TestClient_WritesSkipStandbys(t *testing.T) {
+	t.Parallel()
+
+	mutations := []struct {
+		cmd  string
+		args []string
+	}{
+		{"SET", []string{"t", "k", "v"}},
+		{"DEL", []string{"t", "k"}},
+		{"INCR", []string{"t", "k"}},
+		{"INCR", []string{"t", "k", "2"}},
+		{"APPEND", []string{"t", "k", "v"}},
+		{"HSET", []string{"t", "k", "f", "v"}},
+	}
+	for _, mutation := range mutations {
+		t.Run(mutation.cmd, func(t *testing.T) {
+			t.Parallel()
+			var masterHits, standbyHits atomic.Int32
+			masterAddr := startHandler(t, okHandler(&masterHits))
+			// A standby refuses a mutation, so a misrouted one is visible as a failure rather than a silent success.
+			standbyAddr := startHandler(t, func(_ context.Context, _ string, _ []string) protocol.Reply {
+				standbyHits.Add(1)
+				return protocol.Error("readonly")
+			})
+
+			client := newPool(t, []pool.ServerConfig{
+				{Address: masterAddr, Role: pool.RoleMaster},
+				{Address: standbyAddr, Role: pool.RoleStandby},
+			}, pool.StrategyRoundRobin)
+
+			for range 5 {
+				if _, err := client.Send(mutation.cmd, mutation.args); err != nil {
+					t.Fatalf("Send %s: %v", mutation.cmd, err)
+				}
+			}
+			if standbyHits.Load() != 0 {
+				t.Errorf("standby received %d %s commands, want 0", standbyHits.Load(), mutation.cmd)
+			}
+			if masterHits.Load() != 5 {
+				t.Errorf("master received %d %s commands, want 5", masterHits.Load(), mutation.cmd)
+			}
+		})
+	}
+}
+
+// TestClient_ReadsMayUseStandbys is the other half of the rule above: a read-only command must still be free to land on
+// a standby, or the pool spreads nothing.
+func TestClient_ReadsMayUseStandbys(t *testing.T) {
 	t.Parallel()
 	var masterHits, standbyHits atomic.Int32
 	masterAddr := startHandler(t, okHandler(&masterHits))
@@ -85,18 +133,17 @@ func TestClient_WritesSkipStandbys(t *testing.T) {
 	client := newPool(t, []pool.ServerConfig{
 		{Address: masterAddr, Role: pool.RoleMaster},
 		{Address: standbyAddr, Role: pool.RoleStandby},
-	}, pool.StrategyMasterFirst)
+	}, pool.StrategyRoundRobin)
 
-	for range 5 {
-		if _, err := client.Send("SET", []string{"t", "k", "v"}); err != nil {
-			t.Fatalf("Send SET: %v", err)
+	for _, cmd := range []string{"GET", "TYPE", "HGET", "KEYS", "EXISTS", "TABLES"} {
+		for range 4 {
+			if _, err := client.Send(cmd, []string{"t", "k", "f"}); err != nil {
+				t.Fatalf("Send %s: %v", cmd, err)
+			}
 		}
 	}
-	if standbyHits.Load() != 0 {
-		t.Errorf("standby received %d writes, want 0", standbyHits.Load())
-	}
-	if masterHits.Load() != 5 {
-		t.Errorf("master received %d writes, want 5", masterHits.Load())
+	if standbyHits.Load() == 0 {
+		t.Error("standby received no reads under round_robin")
 	}
 }
 

@@ -69,3 +69,34 @@ func TestParse(t *testing.T) {
 		}
 	}
 }
+
+// TestIsWrite pins down the classification the connection pool routes on: a mutation must reach a master, a read may go
+// anywhere, and a control-plane command is aimed at one node rather than at whichever server holds the master role.
+func TestIsWrite(t *testing.T) {
+	tests := map[string]bool{
+		"SET":         true,
+		"DEL":         true,
+		"INCR":        true,
+		"APPEND":      true,
+		"HSET":        true,
+		"GET":         false,
+		"HGET":        false,
+		"TYPE":        false,
+		"TABLES":      false,
+		"EXISTS":      false,
+		"KEYS":        false,
+		"PROMOTE":     false,
+		"REPLICATION": false,
+		"NONSENSE":    false,
+	}
+	for cmd, want := range tests {
+		if got := parser.IsWrite(cmd); got != want {
+			t.Errorf("IsWrite(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+
+	// The RESP decoder hands the command through as the client wrote it, so classification must survive case and padding.
+	if !parser.IsWrite("  set  ") {
+		t.Error(`IsWrite("  set  ") = false, want true`)
+	}
+}

@@ -44,6 +44,17 @@ var commands = map[string]commandSpec{ //nolint:gochecknoglobals // a single reg
 	"REPLICATION":  {args: 1, readOnly: true, admin: true, usage: "REPLICATION STATUS"},
 }
 
+// IsWrite reports whether cmd mutates state and so has to be routed to a master. The pool asks this rather than keeping
+// its own list: a command whose two classifications disagree is sent to a standby, refused with "ERR readonly", and not
+// retried, because the caller that would fail it over believes it was a read.
+//
+// An unknown command is not a write — the server rejects it either way. Neither are the control-plane commands: PROMOTE
+// mutates, but it is aimed at one specific node, not at whichever server currently holds the master role.
+func IsWrite(cmd string) bool {
+	spec, ok := commands[strings.ToUpper(strings.TrimSpace(cmd))]
+	return ok && !spec.readOnly && !spec.admin
+}
+
 // New creates a new Parser instance.
 func New() *Parser {
 	return &Parser{}

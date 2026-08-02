@@ -60,8 +60,8 @@ func WithWAL(log WAL) Option {
 	return func(storage *Storage) { storage.wal = log }
 }
 
-// WithReadOnly starts the storage in read-only mode, rejecting SET/DEL with ErrReadOnly. Replication standbys use it;
-// Promote lifts it.
+// WithReadOnly starts the storage in read-only mode, rejecting every mutating command with ErrReadOnly. Replication
+// standbys use it; Promote lifts it.
 func WithReadOnly(readOnly bool) Option {
 	return func(storage *Storage) { storage.readOnly.Store(readOnly) }
 }

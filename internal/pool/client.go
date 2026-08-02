@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/OutOfStack/db/internal/network"
+	"github.com/OutOfStack/db/internal/parser"
 	"github.com/OutOfStack/db/internal/protocol"
 )
 
@@ -58,11 +59,11 @@ func NewClient(config *PoolConfig, options ...network.TCPClientOption) (*Client,
 	}, nil
 }
 
-// Send sends a command using the pool, with automatic failover. Writes (SET, DEL) route to a master; reads follow the
+// Send sends a command using the pool, with automatic failover. Mutating commands route to a master; reads follow the
 // configured strategy. A standby that replies "ERR readonly" to a write marks the routing stale, so the pool fails that
 // server over and retries against another master.
 func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
-	write := isWriteCommand(cmd)
+	write := parser.IsWrite(cmd)
 	var lastErr error
 	attempts := 0
 	maxAttempts := c.config.MaxRetries + 1 // initial attempt + retries
@@ -144,16 +145,6 @@ func noServersError(write bool) error {
 		return errors.New("no master servers available in pool")
 	}
 	return errors.New("no servers available in pool")
-}
-
-// isWriteCommand reports whether cmd mutates state and must route to a master.
-func isWriteCommand(cmd string) bool {
-	switch strings.ToUpper(strings.TrimSpace(cmd)) {
-	case "SET", "DEL":
-		return true
-	default:
-		return false
-	}
 }
 
 // isReadOnlyReply reports whether resp is a standby's "ERR readonly" response.
