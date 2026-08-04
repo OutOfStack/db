@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -166,7 +167,7 @@ func captureState(source SnapshotSource) captured {
 func (s *Storage) Execute(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
 	switch cmd {
 	case "SET":
-		return s.set(ctx, args)
+		return s.literalMutation(ctx, wal.CommandSet, args)
 	case "GET":
 		return s.get(ctx, args)
 	case "DEL":
@@ -174,9 +175,9 @@ func (s *Storage) Execute(ctx context.Context, cmd string, args []string) (proto
 	case "INCR":
 		return s.incr(ctx, args)
 	case "APPEND":
-		return s.appendItem(ctx, args)
+		return s.literalMutation(ctx, wal.CommandAppend, args)
 	case "HSET":
-		return s.hset(ctx, args)
+		return s.literalMutation(ctx, wal.CommandHSet, args)
 	case "HGET":
 		return s.hget(ctx, args)
 	case "TYPE":
@@ -192,12 +193,15 @@ func (s *Storage) Execute(ctx context.Context, cmd string, args []string) (proto
 	}
 }
 
-func (s *Storage) set(ctx context.Context, args []string) (protocol.Reply, error) {
-	value, err := protocol.ParseLiteral(args[2])
+// literalMutation logs a mutation whose last argument is a value literal (SET, APPEND, HSET), replacing the literal
+// with its encoding.
+func (s *Storage) literalMutation(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
+	last := len(args) - 1
+	value, err := protocol.ParseLiteral(args[last])
 	if err != nil {
 		return protocol.Reply{}, err
 	}
-	return s.mutation(ctx, wal.CommandSet, []string{args[0], args[1], protocol.Encode(value)})
+	return s.mutation(ctx, cmd, append(slices.Clone(args[:last]), protocol.Encode(value)))
 }
 
 func (s *Storage) get(ctx context.Context, args []string) (protocol.Reply, error) {
@@ -223,22 +227,6 @@ func (s *Storage) incr(ctx context.Context, args []string) (protocol.Reply, erro
 	return s.mutation(ctx, wal.CommandIncr, []string{args[0], args[1], protocol.Encode(delta)})
 }
 
-func (s *Storage) appendItem(ctx context.Context, args []string) (protocol.Reply, error) {
-	element, err := protocol.ParseLiteral(args[2])
-	if err != nil {
-		return protocol.Reply{}, err
-	}
-	return s.mutation(ctx, wal.CommandAppend, []string{args[0], args[1], protocol.Encode(element)})
-}
-
-func (s *Storage) hset(ctx context.Context, args []string) (protocol.Reply, error) {
-	value, err := protocol.ParseLiteral(args[3])
-	if err != nil {
-		return protocol.Reply{}, err
-	}
-	return s.mutation(ctx, wal.CommandHSet, []string{args[0], args[1], args[2], protocol.Encode(value)})
-}
-
 func (s *Storage) hget(ctx context.Context, args []string) (protocol.Reply, error) {
 	stored, err := s.load(ctx, args[0], args[1])
 	if err != nil {
@@ -246,7 +234,7 @@ func (s *Storage) hget(ctx context.Context, args []string) (protocol.Reply, erro
 	}
 	value := protocol.Decode(stored)
 	if value.Kind != protocol.KindMap {
-		return protocol.Reply{}, wrongType("HGET", value.Kind, protocol.KindMap)
+		return protocol.Reply{}, wrongType("HGET", value.Kind, protocol.KindMap.String())
 	}
 	field, ok := value.Map[args[2]]
 	if !ok {

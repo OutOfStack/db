@@ -41,9 +41,6 @@ const (
 // truncated away.
 const segmentHeader = "DBSEG\x00\x02"
 
-// errUnsupportedFormat is returned for a segment this build cannot read.
-var errUnsupportedFormat = errors.New("unsupported segment format")
-
 var (
 	errPartial  = errors.New("partial tiered record")
 	errChecksum = errors.New("tiered record checksum mismatch")
@@ -203,11 +200,11 @@ func openStore(dir string, segmentSize int64, sync wal.SyncPolicy) (*store, erro
 		if size == 0 {
 			// A crash between creating a segment and writing its header leaves an empty file; finish the job rather than
 			// rejecting it as unreadable.
-			if _, err = file.WriteAt([]byte(segmentHeader), 0); err != nil {
+			if err = wal.WriteHeader(file, segmentHeader); err != nil {
 				return nil, fmt.Errorf("write segment %d header: %w", num, err)
 			}
 			size = int64(len(segmentHeader))
-		} else if err = requireSegmentHeader(file); err != nil {
+		} else if _, err = wal.RequireHeader(file, segmentHeader); err != nil {
 			return nil, fmt.Errorf("segment %d: %w", num, err)
 		}
 		s.sizes[num] = size
@@ -239,11 +236,7 @@ func (s *store) openNewActive(num uint32) error {
 	if err != nil {
 		return fmt.Errorf("create segment %d: %w", num, err)
 	}
-	written, err := file.WriteAt([]byte(segmentHeader), 0)
-	if err == nil && written != len(segmentHeader) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
+	if err = wal.WriteHeader(file, segmentHeader); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("write segment header: %w", err)
 	}
@@ -449,19 +442,6 @@ func (s *store) close() error {
 		}
 	}
 	return firstErr
-}
-
-// requireSegmentHeader verifies that a non-empty segment carries the current format header.
-func requireSegmentHeader(file *os.File) error {
-	buf := make([]byte, len(segmentHeader))
-	n, err := file.ReadAt(buf, 0)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	if string(buf[:n]) != segmentHeader {
-		return errUnsupportedFormat
-	}
-	return nil
 }
 
 func segFilename(num uint32) string {

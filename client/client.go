@@ -92,17 +92,7 @@ func (c *Client) Set(ctx context.Context, table, key, value string) error {
 	if err != nil {
 		return err
 	}
-	switch resp.Kind {
-	case protocol.ReplySimpleString:
-		if resp.Value == respOK {
-			return nil
-		}
-		return &ServerError{Msg: replyText(resp)}
-	case protocol.ReplyError:
-		return &ServerError{Msg: resp.Value}
-	default:
-		return &ServerError{Msg: replyText(resp)}
-	}
+	return okReply(resp)
 }
 
 // Get returns the value stored under key in table. Returns ErrNotFound if the key does not exist.
@@ -128,19 +118,10 @@ func (c *Client) Del(ctx context.Context, table, key string) error {
 	if err != nil {
 		return err
 	}
-	switch resp.Kind {
-	case protocol.ReplySimpleString:
-		if resp.Value == respOK {
-			return nil
-		}
-		return &ServerError{Msg: replyText(resp)}
-	case protocol.ReplyNull:
+	if resp.Kind == protocol.ReplyNull {
 		return ErrNotFound
-	case protocol.ReplyError:
-		return &ServerError{Msg: resp.Value}
-	default:
-		return &ServerError{Msg: replyText(resp)}
 	}
+	return okReply(resp)
 }
 
 // Incr adds delta to the numeric value at key, creating it as 0 when the key is missing, and returns the new value.
@@ -172,10 +153,7 @@ func (c *Client) Append(ctx context.Context, table, key, value string) (int64, e
 		return 0, err
 	}
 	if resp.Kind != protocol.ReplyInteger {
-		if resp.Kind == protocol.ReplyError {
-			return 0, &ServerError{Msg: resp.Value}
-		}
-		return 0, &ServerError{Msg: replyText(resp)}
+		return 0, errReply(resp)
 	}
 	return resp.Integer, nil
 }
@@ -190,13 +168,7 @@ func (c *Client) HSet(ctx context.Context, table, key, field, value string) erro
 	if err != nil {
 		return err
 	}
-	if resp.Kind == protocol.ReplySimpleString && resp.Value == respOK {
-		return nil
-	}
-	if resp.Kind == protocol.ReplyError {
-		return &ServerError{Msg: resp.Value}
-	}
-	return &ServerError{Msg: replyText(resp)}
+	return okReply(resp)
 }
 
 // HGet returns one field of the map at key. Returns ErrNotFound if the key or the field does not exist.
@@ -233,11 +205,25 @@ func textReply(resp protocol.Reply) (string, error) {
 		return resp.Value, nil
 	case protocol.ReplyNull:
 		return "", ErrNotFound
-	case protocol.ReplyError:
-		return "", &ServerError{Msg: resp.Value}
 	default:
-		return "", &ServerError{Msg: replyText(resp)}
+		return "", errReply(resp)
 	}
+}
+
+// okReply maps a write acknowledgement to the client error contract: nil for +OK, an error otherwise.
+func okReply(resp protocol.Reply) error {
+	if resp.Kind == protocol.ReplySimpleString && resp.Value == respOK {
+		return nil
+	}
+	return errReply(resp)
+}
+
+// errReply maps a reply already known not to be the expected kind to the shared error contract.
+func errReply(resp protocol.Reply) error {
+	if resp.Kind == protocol.ReplyError {
+		return &ServerError{Msg: resp.Value}
+	}
+	return &ServerError{Msg: replyText(resp)}
 }
 
 // Tables returns all table names in sorted order.
@@ -259,11 +245,8 @@ func (c *Client) TableExists(ctx context.Context, table string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if resp.Kind == protocol.ReplyError {
-		return false, &ServerError{Msg: resp.Value}
-	}
 	if resp.Kind != protocol.ReplyBulkString && resp.Kind != protocol.ReplySimpleString {
-		return false, &ServerError{Msg: replyText(resp)}
+		return false, errReply(resp)
 	}
 	switch resp.Value {
 	case "true":
@@ -290,11 +273,8 @@ func (c *Client) Keys(ctx context.Context, table string) ([]string, error) {
 }
 
 func stringArray(resp protocol.Reply) ([]string, error) {
-	if resp.Kind == protocol.ReplyError {
-		return nil, &ServerError{Msg: resp.Value}
-	}
 	if resp.Kind != protocol.ReplyArray {
-		return nil, &ServerError{Msg: replyText(resp)}
+		return nil, errReply(resp)
 	}
 	values := make([]string, 0, len(resp.Array))
 	for _, item := range resp.Array {

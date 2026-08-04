@@ -11,15 +11,21 @@ import (
 	"github.com/OutOfStack/db/internal/wal"
 )
 
+// rejection is the type of every error with which the command semantics refuse a value. rejected() classifies by this
+// type, so a newly added refusal cannot be forgotten there — forgetting would abort recovery on replay (see rejected).
+type rejection string
+
+func (r rejection) Error() string { return string(r) }
+
 var (
 	// ErrWrongType is returned when a typed operation meets a value of another type. It reaches the client as "ERR wrong
 	// type: ...".
-	ErrWrongType = errors.New("wrong type")
+	ErrWrongType = rejection("wrong type")
 	// ErrOverflow ErrNotFinite and ErrTooDeep are the other ways the command semantics refuse a value: arithmetic that
 	// leaves the int64 range or the finite floats, and nesting the codec could not read back.
-	ErrOverflow  = errors.New("increment would overflow int64")
-	ErrNotFinite = errors.New("increment result is not a finite number")
-	ErrTooDeep   = errors.New("value nests too deep to be stored")
+	ErrOverflow  = rejection("increment would overflow int64")
+	ErrNotFinite = rejection("increment result is not a finite number")
+	ErrTooDeep   = rejection("value nests too deep to be stored")
 )
 
 const replyOK = "OK"
@@ -62,11 +68,8 @@ func ApplyReplay(ctx context.Context, eng Engine, cmd string, args []string) err
 // deterministic — the record was logged before it failed, and replaying it fails identically — so recovery and
 // replication have to treat it as the no-op it already was. A storage failure must still stop them.
 func rejected(err error) bool {
-	return errors.Is(err, engine.ErrNotFound) ||
-		errors.Is(err, ErrWrongType) ||
-		errors.Is(err, ErrOverflow) ||
-		errors.Is(err, ErrNotFinite) ||
-		errors.Is(err, ErrTooDeep)
+	var r rejection
+	return errors.Is(err, engine.ErrNotFound) || errors.As(err, &r)
 }
 
 func applyIncr(ctx context.Context, eng Engine, args []string) (protocol.Reply, error) {
@@ -98,7 +101,7 @@ func applyAppend(ctx context.Context, eng Engine, args []string) (protocol.Reply
 		if exists {
 			current := protocol.Decode(old)
 			if current.Kind != protocol.KindArray {
-				return "", wrongType(wal.CommandAppend, current.Kind, protocol.KindArray)
+				return "", wrongType(wal.CommandAppend, current.Kind, protocol.KindArray.String())
 			}
 			items = current.Array
 		}
@@ -119,7 +122,7 @@ func applyHSet(ctx context.Context, eng Engine, args []string) (protocol.Reply, 
 		if exists {
 			current := protocol.Decode(old)
 			if current.Kind != protocol.KindMap {
-				return "", wrongType(wal.CommandHSet, current.Kind, protocol.KindMap)
+				return "", wrongType(wal.CommandHSet, current.Kind, protocol.KindMap.String())
 			}
 			fields = current.Map
 		}
@@ -132,25 +135,24 @@ func applyHSet(ctx context.Context, eng Engine, args []string) (protocol.Reply, 
 	return protocol.SimpleString(replyOK), nil
 }
 
-// encodeStorable encodes a value only if it reads back as the value it was. APPEND and HSET wrap their argument in one
-// more level of nesting, which can push the result past the depth the codec will decode; storing it would turn the key
-// into an opaque string on the very next read.
+// encodeStorable encodes a value only if the codec will read it back. APPEND and HSET wrap their argument in one more
+// level of nesting, which can push the result past the depth the codec will decode; storing it would turn the key into
+// an opaque string on the very next read.
 func encodeStorable(v protocol.Value) (string, error) {
-	encoded := protocol.Encode(v)
-	if protocol.Decode(encoded).Kind != v.Kind {
+	if protocol.TooDeep(v) {
 		return "", ErrTooDeep
 	}
-	return encoded, nil
+	return protocol.Encode(v), nil
 }
 
 // add sums two numbers, keeping int arithmetic exact: int + int stays an int unless it would overflow, and any float
 // operand makes the result a float.
 func add(current, delta protocol.Value) (protocol.Value, error) {
 	if !numeric(current) {
-		return protocol.Value{}, wrongType(wal.CommandIncr, current.Kind, protocol.KindInt)
+		return protocol.Value{}, wrongType(wal.CommandIncr, current.Kind, "int or float")
 	}
 	if !numeric(delta) {
-		return protocol.Value{}, wrongType(wal.CommandIncr, delta.Kind, protocol.KindInt)
+		return protocol.Value{}, wrongType(wal.CommandIncr, delta.Kind, "int or float")
 	}
 	if current.Kind == protocol.KindInt && delta.Kind == protocol.KindInt {
 		sum := current.Int + delta.Int
@@ -179,9 +181,6 @@ func asFloat(v protocol.Value) float64 {
 	return v.Float
 }
 
-func wrongType(cmd string, got, want protocol.Kind) error {
-	if cmd == wal.CommandIncr {
-		return fmt.Errorf("%w: key holds %s, %s requires int or float", ErrWrongType, got, cmd)
-	}
+func wrongType(cmd string, got protocol.Kind, want string) error {
 	return fmt.Errorf("%w: key holds %s, %s requires %s", ErrWrongType, got, cmd, want)
 }

@@ -30,11 +30,7 @@ func WriteSnapshot(ctx context.Context, dir string, lsn uint64, source SnapshotS
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
 
-	var written int
-	if written, err = temporary.WriteString(snapshotHeader); err == nil && written != len(snapshotHeader) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
+	if err = WriteHeader(temporary, snapshotHeader); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("write snapshot header: %w", err)
 	}

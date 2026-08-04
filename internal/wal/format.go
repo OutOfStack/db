@@ -17,11 +17,12 @@ const (
 )
 
 // ErrUnsupportedFormat is returned for a file written in a format this build does not read.
-var ErrUnsupportedFormat = errors.New("unsupported wal file format")
+var ErrUnsupportedFormat = errors.New("unsupported file format")
 
-// requireHeader verifies that file starts with header and returns the offset its records begin at. An empty file is
+// RequireHeader verifies that file starts with header and returns the offset its records begin at. An empty file is
 // accepted as one with no records: a crash between creating a segment and writing its header leaves exactly that.
-func requireHeader(file *os.File, header string) (int64, error) {
+// The tiered engine shares it (and WriteHeader) so both packages enforce the same format-header contract.
+func RequireHeader(file *os.File, header string) (int64, error) {
 	buf := make([]byte, len(header))
 	n, err := file.ReadAt(buf, 0)
 	if n == 0 && errors.Is(err, io.EOF) {
@@ -52,6 +53,15 @@ func consumeHeader(reader *bufio.Reader, header string) error {
 	return err
 }
 
+// WriteHeader writes a format header at the start of a freshly opened, empty file, treating a short write as an error.
+func WriteHeader(file *os.File, header string) error {
+	written, err := file.WriteString(header)
+	if err == nil && written != len(header) {
+		err = io.ErrShortWrite
+	}
+	return err
+}
+
 // openTailSegment opens the newest segment for appending and returns it with the size to append at. An empty file is a
 // crash between creating a segment and writing its header: the header is written now, since records appended into it
 // would otherwise sit where the header belongs and the next open would reject the whole segment.
@@ -66,17 +76,13 @@ func openTailSegment(path string) (*os.File, int64, error) {
 		return nil, 0, fmt.Errorf("stat WAL segment: %w", err)
 	}
 	if size := info.Size(); size > 0 {
-		if _, err = requireHeader(file, walHeader); err != nil {
+		if _, err = RequireHeader(file, walHeader); err != nil {
 			_ = file.Close()
 			return nil, 0, fmt.Errorf("read WAL segment header: %w", err)
 		}
 		return file, size, nil
 	}
-	written, err := file.WriteString(walHeader)
-	if err == nil && written != len(walHeader) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
+	if err = WriteHeader(file, walHeader); err != nil {
 		_ = file.Close()
 		return nil, 0, fmt.Errorf("write WAL segment header: %w", err)
 	}
@@ -88,7 +94,7 @@ func openWALSegment(path string) (*os.File, *bufio.Reader, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	offset, err := requireHeader(file, walHeader)
+	offset, err := RequireHeader(file, walHeader)
 	if err == nil {
 		_, err = file.Seek(offset, io.SeekStart)
 	}

@@ -467,11 +467,7 @@ func (w *Writer) ensureSegment(state *writerState, lsn uint64, recordSize int64)
 	if err != nil {
 		return err
 	}
-	written, err := file.WriteString(walHeader)
-	if err == nil && written != len(walHeader) {
-		err = io.ErrShortWrite
-	}
-	if err != nil {
+	if err = WriteHeader(file, walHeader); err != nil {
 		_ = file.Close()
 		return fmt.Errorf("write WAL segment header: %w", err)
 	}
