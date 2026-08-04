@@ -1,5 +1,5 @@
-// Package client provides a Go client for the database server.
-// It is the only package in this module intended for import by external programs:
+// Package client provides a Go client for the database server. It is the only package in this module intended for
+// import by external programs:
 //
 //	import "github.com/OutOfStack/db/client"
 //
@@ -7,6 +7,9 @@
 //	err = c.Set(ctx, "users", "name", "vlad")
 //	val, err := c.Get(ctx, "users", "name")
 //	err = c.Del(ctx, "users", "name")
+//
+// Values are typed. A value is sent as a literal: 42 is an int, 42.5 a float, true a bool, [1,2] an array, {"a":1} a
+// map, "42" and any other text a string. Values come back in a human-readable form, and Type reports what a key holds.
 package client
 
 import (
@@ -24,13 +27,11 @@ import (
 const (
 	respOK = "OK"
 
-	// maxTableNameLen mirrors the server-side parser limit so invalid
-	// table names are rejected before reaching the wire
+	// maxTableNameLen mirrors the server-side parser limit so invalid table names are rejected before reaching the wire
 	maxTableNameLen = 128
 )
 
-// transport is the minimal connection interface the client needs.
-// Satisfied by *network.TCPClient and *pool.Client
+// transport is the minimal connection interface the client needs. Satisfied by *network.TCPClient and *pool.Client
 type transport interface {
 	Send(cmd string, args []string) (protocol.Reply, error)
 	Close() error
@@ -41,10 +42,9 @@ type Client struct {
 	transport transport
 }
 
-// New creates a new Client configured by the given options.
-// With WithServers, connections are pooled across the given servers with
-// automatic failover; otherwise a single connection is established to the
-// address set by WithAddress (default 127.0.0.1:3223)
+// New creates a new Client configured by the given options. With WithServers, connections are pooled across the given
+// servers with automatic failover; otherwise a single connection is established to the address set by WithAddress
+// (default 127.0.0.1:3223)
 func New(opts ...Option) (*Client, error) {
 	o := defaultOptions()
 	for _, opt := range opts {
@@ -92,21 +92,10 @@ func (c *Client) Set(ctx context.Context, table, key, value string) error {
 	if err != nil {
 		return err
 	}
-	switch resp.Kind {
-	case protocol.ReplySimpleString:
-		if resp.Value == respOK {
-			return nil
-		}
-		return &ServerError{Msg: replyText(resp)}
-	case protocol.ReplyError:
-		return &ServerError{Msg: resp.Value}
-	default:
-		return &ServerError{Msg: replyText(resp)}
-	}
+	return okReply(resp)
 }
 
-// Get returns the value stored under key in table.
-// Returns ErrNotFound if the key does not exist.
+// Get returns the value stored under key in table. Returns ErrNotFound if the key does not exist.
 func (c *Client) Get(ctx context.Context, table, key string) (string, error) {
 	if err := validateArgs(table, key); err != nil {
 		return "", err
@@ -116,20 +105,10 @@ func (c *Client) Get(ctx context.Context, table, key string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	switch resp.Kind {
-	case protocol.ReplyBulkString, protocol.ReplySimpleString:
-		return resp.Value, nil
-	case protocol.ReplyNull:
-		return "", ErrNotFound
-	case protocol.ReplyError:
-		return "", &ServerError{Msg: resp.Value}
-	default:
-		return "", &ServerError{Msg: replyText(resp)}
-	}
+	return textReply(resp)
 }
 
-// Del deletes key from table.
-// Returns ErrNotFound if the key does not exist
+// Del deletes key from table. Returns ErrNotFound if the key does not exist
 func (c *Client) Del(ctx context.Context, table, key string) error {
 	if err := validateArgs(table, key); err != nil {
 		return err
@@ -139,19 +118,112 @@ func (c *Client) Del(ctx context.Context, table, key string) error {
 	if err != nil {
 		return err
 	}
-	switch resp.Kind {
-	case protocol.ReplySimpleString:
-		if resp.Value == respOK {
-			return nil
-		}
-		return &ServerError{Msg: replyText(resp)}
-	case protocol.ReplyNull:
+	if resp.Kind == protocol.ReplyNull {
 		return ErrNotFound
-	case protocol.ReplyError:
-		return &ServerError{Msg: resp.Value}
-	default:
-		return &ServerError{Msg: replyText(resp)}
 	}
+	return okReply(resp)
+}
+
+// Incr adds delta to the numeric value at key, creating it as 0 when the key is missing, and returns the new value.
+// delta is a literal ("1", "-2", "0.5"); an empty delta increments by 1.
+func (c *Client) Incr(ctx context.Context, table, key, delta string) (string, error) {
+	if err := validateArgs(table, key); err != nil {
+		return "", err
+	}
+
+	args := []string{table, key}
+	if delta != "" {
+		args = append(args, delta)
+	}
+	resp, err := c.send(ctx, "INCR", args)
+	if err != nil {
+		return "", err
+	}
+	return textReply(resp)
+}
+
+// Append pushes value onto the array at key, creating the array when the key is missing, and returns the new length.
+func (c *Client) Append(ctx context.Context, table, key, value string) (int64, error) {
+	if err := validateArgs(table, key, value); err != nil {
+		return 0, err
+	}
+
+	resp, err := c.send(ctx, "APPEND", []string{table, key, value})
+	if err != nil {
+		return 0, err
+	}
+	if resp.Kind != protocol.ReplyInteger {
+		return 0, errReply(resp)
+	}
+	return resp.Integer, nil
+}
+
+// HSet sets field of the map at key, creating the map when the key is missing.
+func (c *Client) HSet(ctx context.Context, table, key, field, value string) error {
+	if err := validateArgs(table, key, value); err != nil {
+		return err
+	}
+
+	resp, err := c.send(ctx, "HSET", []string{table, key, field, value})
+	if err != nil {
+		return err
+	}
+	return okReply(resp)
+}
+
+// HGet returns one field of the map at key. Returns ErrNotFound if the key or the field does not exist.
+func (c *Client) HGet(ctx context.Context, table, key, field string) (string, error) {
+	if err := validateArgs(table, key); err != nil {
+		return "", err
+	}
+
+	resp, err := c.send(ctx, "HGET", []string{table, key, field})
+	if err != nil {
+		return "", err
+	}
+	return textReply(resp)
+}
+
+// Type returns the type of the value at key: string, int, float, bool, array or map. Returns ErrNotFound if the key
+// does not exist.
+func (c *Client) Type(ctx context.Context, table, key string) (string, error) {
+	if err := validateArgs(table, key); err != nil {
+		return "", err
+	}
+
+	resp, err := c.send(ctx, "TYPE", []string{table, key})
+	if err != nil {
+		return "", err
+	}
+	return textReply(resp)
+}
+
+// textReply maps a value-returning reply to its text, with the same missing-key contract as Get.
+func textReply(resp protocol.Reply) (string, error) {
+	switch resp.Kind {
+	case protocol.ReplyBulkString, protocol.ReplySimpleString:
+		return resp.Value, nil
+	case protocol.ReplyNull:
+		return "", ErrNotFound
+	default:
+		return "", errReply(resp)
+	}
+}
+
+// okReply maps a write acknowledgement to the client error contract: nil for +OK, an error otherwise.
+func okReply(resp protocol.Reply) error {
+	if resp.Kind == protocol.ReplySimpleString && resp.Value == respOK {
+		return nil
+	}
+	return errReply(resp)
+}
+
+// errReply maps a reply already known not to be the expected kind to the shared error contract.
+func errReply(resp protocol.Reply) error {
+	if resp.Kind == protocol.ReplyError {
+		return &ServerError{Msg: resp.Value}
+	}
+	return &ServerError{Msg: replyText(resp)}
 }
 
 // Tables returns all table names in sorted order.
@@ -173,11 +245,8 @@ func (c *Client) TableExists(ctx context.Context, table string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if resp.Kind == protocol.ReplyError {
-		return false, &ServerError{Msg: resp.Value}
-	}
 	if resp.Kind != protocol.ReplyBulkString && resp.Kind != protocol.ReplySimpleString {
-		return false, &ServerError{Msg: replyText(resp)}
+		return false, errReply(resp)
 	}
 	switch resp.Value {
 	case "true":
@@ -189,8 +258,8 @@ func (c *Client) TableExists(ctx context.Context, table string) (bool, error) {
 	}
 }
 
-// Keys returns all keys in table in sorted order. A missing table returns an
-// empty slice. The response is subject to the configured message-size limit.
+// Keys returns all keys in table in sorted order. A missing table returns an empty slice. The response is subject to
+// the configured message-size limit.
 func (c *Client) Keys(ctx context.Context, table string) ([]string, error) {
 	if err := validateArgs(table); err != nil {
 		return nil, err
@@ -204,11 +273,8 @@ func (c *Client) Keys(ctx context.Context, table string) ([]string, error) {
 }
 
 func stringArray(resp protocol.Reply) ([]string, error) {
-	if resp.Kind == protocol.ReplyError {
-		return nil, &ServerError{Msg: resp.Value}
-	}
 	if resp.Kind != protocol.ReplyArray {
-		return nil, &ServerError{Msg: replyText(resp)}
+		return nil, errReply(resp)
 	}
 	values := make([]string, 0, len(resp.Array))
 	for _, item := range resp.Array {
@@ -220,9 +286,8 @@ func stringArray(resp protocol.Reply) ([]string, error) {
 	return values, nil
 }
 
-// Raw sends a raw command line to the server and returns the response text
-// as is, without error mapping. It gives access to commands that have no
-// typed wrapper yet.
+// Raw sends a raw command line to the server and returns the response text as is, without error mapping. It gives
+// access to commands that have no typed wrapper yet.
 func (c *Client) Raw(ctx context.Context, command string) (string, error) {
 	parts, err := splitCommandLine(command)
 	if err != nil {
@@ -245,8 +310,7 @@ func (c *Client) Close() error {
 
 // send sends a command to the server and returns a typed response.
 func (c *Client) send(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
-	// the current transport cannot honor cancellation mid-call,
-	// so check the context before sending
+	// the current transport cannot honor cancellation mid-call, so check the context before sending
 	if err := ctx.Err(); err != nil {
 		return protocol.Reply{}, err
 	}
@@ -277,8 +341,8 @@ func replyText(reply protocol.Reply) string {
 	}
 }
 
-// validateArgs checks command arguments that are still constrained by database
-// semantics. RESP framing itself can carry whitespace, newlines, and NUL bytes.
+// validateArgs checks command arguments that are still constrained by database semantics. RESP framing itself can carry
+// whitespace, newlines, and NUL bytes.
 func validateArgs(table string, args ...string) error {
 	if table == "" {
 		return errors.New("table cannot be empty")
@@ -305,6 +369,15 @@ func splitCommandLine(command string) ([]string, error) {
 	inToken := false
 
 	for _, r := range command {
+		if quote == '\'' {
+			if r == '\'' {
+				quote = 0
+			} else {
+				current.WriteRune(r)
+			}
+			continue
+		}
+
 		if escaped {
 			current.WriteRune(unescape(r))
 			escaped = false

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/OutOfStack/db/internal/engine"
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/replication"
 	"github.com/OutOfStack/db/internal/storage"
 	"github.com/OutOfStack/db/internal/wal"
@@ -36,8 +37,8 @@ func newNode(t *testing.T, dir string) *node {
 	}
 }
 
-// reopen recovers a node from its data directory, returning the recovered
-// applied LSN. It simulates a restart: load the snapshot, replay the WAL tail.
+// reopen recovers a node from its data directory, returning the recovered applied LSN. It simulates a restart: load the
+// snapshot, replay the WAL tail.
 func reopenNode(t *testing.T, dir string) (*node, uint64) {
 	t.Helper()
 	eng := engine.New()
@@ -126,11 +127,11 @@ func mustGet(t *testing.T, n *node, table, key string) string {
 	if err != nil {
 		t.Fatalf("standby Get %s/%s: %v", table, key, err)
 	}
-	return value
+	return protocol.Render(protocol.Decode(value))
 }
 
-// TestReplication_StreamsWrites verifies a standby receives and applies live
-// writes from the master and reports zero lag once caught up.
+// TestReplication_StreamsWrites verifies a standby receives and applies live writes from the master and reports zero
+// lag once caught up.
 func TestReplication_StreamsWrites(t *testing.T) {
 	t.Parallel()
 	master := newNode(t, t.TempDir())
@@ -161,8 +162,8 @@ func TestReplication_StreamsWrites(t *testing.T) {
 	waitFor(t, "lag to settle to zero", func() bool { return sb.Lag() == 0 })
 }
 
-// TestReplication_ResumesFromLSN verifies a restarted standby resumes from its
-// persisted LSN instead of re-fetching the whole log.
+// TestReplication_ResumesFromLSN verifies a restarted standby resumes from its persisted LSN instead of re-fetching the
+// whole log.
 func TestReplication_ResumesFromLSN(t *testing.T) {
 	t.Parallel()
 	master := newNode(t, t.TempDir())
@@ -203,8 +204,8 @@ func TestReplication_ResumesFromLSN(t *testing.T) {
 	}
 }
 
-// TestReplication_SnapshotResync verifies a standby far enough behind that the
-// master has pruned its WAL bootstraps from a shipped snapshot.
+// TestReplication_SnapshotResync verifies a standby far enough behind that the master has pruned its WAL bootstraps
+// from a shipped snapshot.
 func TestReplication_SnapshotResync(t *testing.T) {
 	t.Parallel()
 	master := newNode(t, t.TempDir())
@@ -214,8 +215,8 @@ func TestReplication_SnapshotResync(t *testing.T) {
 	set(t, master, "t", "k1", "v1")
 	set(t, master, "t", "k2", "v2")
 	set(t, master, "t", "k3", "v3")
-	// Snapshot + prune removes the WAL segments below the snapshot LSN, so a
-	// fresh standby cannot be served from segments alone.
+	// Snapshot + prune removes the WAL segments below the snapshot LSN, so a fresh standby cannot be served from segments
+	// alone.
 	snapshot(t, master)
 	set(t, master, "t", "k4", "v4")
 

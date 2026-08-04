@@ -151,6 +151,20 @@ func (mr *MockEngineMockRecorder) Tables(ctx any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tables", reflect.TypeOf((*MockEngine)(nil).Tables), ctx)
 }
 
+// Update mocks base method.
+func (m *MockEngine) Update(ctx context.Context, table, key string, fn func(string, bool) (string, error)) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Update", ctx, table, key, fn)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Update indicates an expected call of Update.
+func (mr *MockEngineMockRecorder) Update(ctx, table, key, fn any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Update", reflect.TypeOf((*MockEngine)(nil).Update), ctx, table, key, fn)
+}
+
 // MockWAL is a mock of WAL interface.
 type MockWAL struct {
 	ctrl     *gomock.Controller

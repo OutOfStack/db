@@ -1,14 +1,11 @@
-# Example server configuration file
-# Copy this to config.yaml and modify as needed
+# Example server configuration file. Copy this to config.yaml and modify as needed
 
 engine:
   type: "in_memory"          # "in_memory" (RAM-only) or "tiered" (memory/disk)
 
-  # The "tiered" engine lets the dataset grow beyond RAM: an append-only on-disk
-  # segment store is the source of truth, a full in-memory keydir indexes every
-  # key, and an LRU cache holds hot values. It provides its own durability, so it
-  # cannot be combined with wal.enabled or replication. The fields below apply
-  # only when type is "tiered".
+  # The "tiered" engine lets the dataset grow beyond RAM: an append-only on-disk segment store is the source of truth, a
+  # full in-memory keydir indexes every key, and an LRU cache holds hot values. It provides its own durability, so it
+  # cannot be combined with wal.enabled or replication. The fields below apply only when type is "tiered".
   data_dir: "data"           # directory for the tiered segment store
   max_memory: 64             # MiB of hot values kept in RAM (LRU budget)
   max_storage: 1024          # MiB ceiling on live data; SET returns "ERR storage full" beyond it
@@ -17,7 +14,8 @@ engine:
   compaction_threshold: 0.5  # reclaim a sealed segment once this fraction is dead bytes
   compaction_interval: 30s   # how often to compact and log cache/disk stats
 
-# WAL is disabled by default for backward compatibility.
+# The WAL is off by default: the in-memory engine runs without touching disk until persistence is asked for. It cannot
+# be combined with engine.type tiered, which keeps its own durable store.
 wal:
   enabled: false
   data_dir: "data"
@@ -25,13 +23,12 @@ wal:
   segment_size: 64          # MiB
   snapshot_interval: 5m
 
-# Replication ships the WAL from a master to standbys (asynchronous). It requires
-# wal.enabled. Leave role empty for a standalone server.
+# Replication ships the WAL from a master to standbys (asynchronous). It requires wal.enabled. Leave role empty for a
+# standalone server.
 replication:
   role: ""                        # "", "master", or "standby"
-  # master: address standbys connect to for the WAL stream.
-  # standby (optional): if set, PROMOTE starts serving replication here so other
-  # standbys can be re-aimed at the promoted node.
+  # master: address standbys connect to for the WAL stream. standby (optional): if set, PROMOTE starts serving
+  # replication here so other standbys can be re-aimed at the promoted node.
   listen_address: ""              # e.g. "127.0.0.1:3224"
   # standby: the master's listen_address to replicate from.
   master_address: ""              # e.g. "127.0.0.1:3224"

@@ -12,12 +12,11 @@ import (
 // defaultAddress is the default server address shared by server and client configs
 const defaultAddress = "127.0.0.1:3223"
 
-// defaultDataDir is the default on-disk directory for WAL segments, snapshots,
-// and tiered-engine segments.
+// defaultDataDir is the default on-disk directory for WAL segments, snapshots, and tiered-engine segments.
 const defaultDataDir = "data"
 
-// getAllowedConfigDirs returns the list of directories to search for config files.
-// It checks current directory, user config directory, and user home directory
+// getAllowedConfigDirs returns the list of directories to search for config files. It checks current directory, user
+// config directory, and user home directory
 func getAllowedConfigDirs() []string {
 	var dirs []string
 
@@ -34,8 +33,8 @@ func getAllowedConfigDirs() []string {
 	return dirs
 }
 
-// load reads a configuration file into the provided config struct.
-// If the file is not found, it returns nil data and no error
+// load reads a configuration file into the provided config struct. If the file is not found, it returns nil data and no
+// error
 func load(filename string) (data []byte, err error) {
 	if !fs.ValidPath(filename) {
 		return nil, fmt.Errorf("invalid config filename: %q", filename)
@@ -58,8 +57,7 @@ func load(filename string) (data []byte, err error) {
 	return nil, nil
 }
 
-// LoadServerConfig loads the server configuration from a YAML file and
-// applies DB_* environment variable overrides.
+// LoadServerConfig loads the server configuration from a YAML file and applies DB_* environment variable overrides.
 // Priority: environment variables > file values > defaults
 func LoadServerConfig(filename string) (*ServerConfig, error) {
 	cfg := DefaultServerConfig()

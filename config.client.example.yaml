@@ -1,5 +1,4 @@
-# Example client configuration file
-# Copy this to client.yaml and modify as needed
+# Example client configuration file. Copy this to client.yaml and modify as needed
 
 network:
   address: "127.0.0.1:3223"

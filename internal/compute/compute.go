@@ -20,8 +20,7 @@ type Parser interface {
 	Parse(cmd string, args []string) (string, []string, error)
 }
 
-// Admin handles replication control-plane commands that live above the storage
-// layer and are never written to the WAL.
+// Admin handles replication control-plane commands that live above the storage layer and are never written to the WAL.
 type Admin interface {
 	Promote(ctx context.Context) (protocol.Reply, error)
 	Status(ctx context.Context) (protocol.Reply, error)
@@ -79,8 +78,8 @@ func (c *Compute) HandleRequest(ctx context.Context, cmd string, args []string) 
 	return result, nil
 }
 
-// handleAdmin dispatches replication control commands. handled is true when cmd
-// is such a command, in which case the caller returns reply/err directly.
+// handleAdmin dispatches replication control commands. handled is true when cmd is such a command, in which case the
+// caller returns reply/err directly.
 func (c *Compute) handleAdmin(ctx context.Context, cmd string, args []string) (protocol.Reply, bool, error) {
 	switch cmd {
 	case "PROMOTE":

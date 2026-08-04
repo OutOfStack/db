@@ -238,6 +238,43 @@ func TestClient_Raw(t *testing.T) {
 	}
 }
 
+// TestSplitCommandLineQuoting covers the quoting rules the README documents for typed literals: single quotes are
+// literal, so a value carrying backslashes (a JSON escape, a Windows path) survives the split unchanged, while escapes
+// are still processed outside them and inside double quotes.
+func TestSplitCommandLineQuoting(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		line string
+		want []string
+	}{
+		{"single quotes keep backslashes", `SET t k '{"path":"C:\\tmp"}'`, []string{"SET", "t", "k", `{"path":"C:\\tmp"}`}},
+		{"single quotes keep escape text", `SET t k 'a\nb'`, []string{"SET", "t", "k", `a\nb`}},
+		{"single quotes keep spaces", `SET t k 'hello world'`, []string{"SET", "t", "k", "hello world"}},
+		{"single quotes keep double quotes", `SET t k '{"a":1}'`, []string{"SET", "t", "k", `{"a":1}`}},
+		{"empty single-quoted token", `SET t k ''`, []string{"SET", "t", "k", ""}},
+		{"double quotes still unescape", `SET t k "a\nb"`, []string{"SET", "t", "k", "a\nb"}},
+		{"bare escapes still unescape", `SET t k a\tb`, []string{"SET", "t", "k", "a\tb"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := client.SplitCommandLine(tc.line)
+			if err != nil {
+				t.Fatalf("SplitCommandLine(%s) error = %v", tc.line, err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("SplitCommandLine(%s) = %q, want %q", tc.line, got, tc.want)
+			}
+		})
+	}
+
+	if _, err := client.SplitCommandLine(`SET t k 'unterminated`); err == nil {
+		t.Error("unterminated single quote should fail")
+	}
+}
+
 func TestClient_ArgValidation(t *testing.T) {
 	t.Parallel()
 
@@ -344,4 +381,74 @@ func TestNew_Validation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestClient_TypedCommands(t *testing.T) {
+	t.Parallel()
+
+	t.Run("incr sends the delta only when given", func(t *testing.T) {
+		t.Parallel()
+		ft := &fakeTransport{resp: protocol.BulkString("3")}
+		c := client.NewWithTransport(ft)
+
+		got, err := c.Incr(t.Context(), "stats", "hits", "")
+		if err != nil || got != "3" {
+			t.Fatalf("Incr() = %q, %v", got, err)
+		}
+		if _, err = c.Incr(t.Context(), "stats", "hits", "2"); err != nil {
+			t.Fatal(err)
+		}
+		wantSent := []sentCommand{
+			{cmd: "INCR", args: []string{"stats", "hits"}},
+			{cmd: "INCR", args: []string{"stats", "hits", "2"}},
+		}
+		if !reflect.DeepEqual(ft.sent, wantSent) {
+			t.Errorf("sent = %#v, want %#v", ft.sent, wantSent)
+		}
+	})
+
+	t.Run("append returns the new length", func(t *testing.T) {
+		t.Parallel()
+		got, err := client.NewWithTransport(&fakeTransport{resp: protocol.Integer(2)}).
+			Append(t.Context(), "t", "list", "x")
+		if err != nil || got != 2 {
+			t.Fatalf("Append() = %d, %v", got, err)
+		}
+	})
+
+	t.Run("hset ok", func(t *testing.T) {
+		t.Parallel()
+		if err := client.NewWithTransport(&fakeTransport{resp: protocol.SimpleString("OK")}).
+			HSet(t.Context(), "t", "user", "name", "vlad"); err != nil {
+			t.Fatalf("HSet() error = %v", err)
+		}
+	})
+
+	t.Run("hget missing field is ErrNotFound", func(t *testing.T) {
+		t.Parallel()
+		_, err := client.NewWithTransport(&fakeTransport{resp: protocol.NullBulkString()}).
+			HGet(t.Context(), "t", "user", "nope")
+		if !errors.Is(err, client.ErrNotFound) {
+			t.Fatalf("HGet() error = %v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("type returns the type name", func(t *testing.T) {
+		t.Parallel()
+		got, err := client.NewWithTransport(&fakeTransport{resp: protocol.SimpleString("array")}).
+			Type(t.Context(), "t", "list")
+		if err != nil || got != "array" {
+			t.Fatalf("Type() = %q, %v", got, err)
+		}
+	})
+
+	t.Run("server error surfaces", func(t *testing.T) {
+		t.Parallel()
+		_, err := client.NewWithTransport(&fakeTransport{resp: protocol.Error("wrong type: key holds array, INCR requires int or float")}).
+			Incr(t.Context(), "t", "list", "")
+		var srvErr *client.ServerError
+		if !errors.As(err, &srvErr) {
+			t.Fatalf("Incr() error = %v, want ServerError", err)
+		}
+	})
 }

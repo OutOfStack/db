@@ -35,7 +35,6 @@ type PoolConfig struct {
 	SelectionStrategy SelectionStrategy `yaml:"selection_strategy"`
 	MaxRetries        int               `yaml:"max_retries"`
 	RetryDelay        time.Duration     `yaml:"retry_delay"`
-	HealthCheckPeriod time.Duration     `yaml:"health_check_period"`
 	FailureTimeout    time.Duration     `yaml:"failure_timeout"` // Time after which failed servers are retried
 }
 
@@ -47,7 +46,6 @@ func DefaultPoolConfig() *PoolConfig {
 		SelectionStrategy: StrategyMasterFirst,
 		MaxRetries:        3,
 		RetryDelay:        time.Second,
-		HealthCheckPeriod: 10 * time.Second,
 		FailureTimeout:    30 * time.Second, // Retry failed servers after 30 seconds
 	}
 }

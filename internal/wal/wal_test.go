@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/wal"
 )
 
@@ -54,6 +55,96 @@ func TestRecordRoundTripAndChecksum(t *testing.T) {
 	_, err = wal.NewReader(dir, nil).Replay(0, func(wal.Record) error { return nil })
 	if !errors.Is(err, wal.ErrChecksum) {
 		t.Fatalf("Replay() error = %v, want ErrChecksum", err)
+	}
+}
+
+// TestHeaderlessFilesAreRejected covers files written before this format version. They are refused at open rather than
+// parsed: their records would decode as garbage, and a garbage tail is indistinguishable from a crash tail that
+// recovery truncates away.
+func TestHeaderlessFilesAreRejected(t *testing.T) {
+	t.Parallel()
+
+	t.Run("wal segment", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		record, err := wal.EncodeRecord(wal.Record{
+			LSN: 1, Command: wal.CommandSet, Args: []string{"t", "k", "v"},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = os.WriteFile(filepath.Join(dir, "wal-00000000000000000001.log"), record, 0o600); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = wal.NewReader(dir, nil).Replay(0, func(wal.Record) error { return nil })
+		if !errors.Is(err, wal.ErrUnsupportedFormat) {
+			t.Fatalf("Replay() error = %v, want ErrUnsupportedFormat", err)
+		}
+	})
+
+	t.Run("snapshot", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		file, err := os.Create(filepath.Join(dir, "snapshot-00000000000000000007.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err = protocol.WriteCommand(file, wal.CommandSet, []string{"t", "k", "v"}); err != nil {
+			t.Fatal(err)
+		}
+		if err = file.Close(); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = wal.LoadLatestSnapshot(dir, func(_, _, _ string) error { return nil })
+		if !errors.Is(err, wal.ErrUnsupportedFormat) {
+			t.Fatalf("LoadLatestSnapshot() error = %v, want ErrUnsupportedFormat", err)
+		}
+	})
+
+	t.Run("an empty segment is not a format error", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		// A crash between creating a segment and writing its header leaves this.
+		if err := os.WriteFile(filepath.Join(dir, "wal-00000000000000000001.log"), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := wal.NewReader(dir, nil).Replay(0, func(wal.Record) error { return nil }); err != nil {
+			t.Fatalf("Replay() over an empty segment error = %v", err)
+		}
+	})
+}
+
+// TestAppendingToRecoveredEmptySegment covers the other side of the empty-segment case above: reopening one must give it
+// a header before appending, or the records land where the header belongs and the next open rejects the whole segment.
+func TestAppendingToRecoveredEmptySegment(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "wal-00000000000000000001.log"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	writer, err := wal.OpenWriter(wal.WriterConfig{Dir: dir, Sync: wal.SyncAlways, SegmentSize: 1 << 20}, 0)
+	if err != nil {
+		t.Fatalf("OpenWriter() error = %v", err)
+	}
+	if _, err = writer.Append(t.Context(), wal.CommandSet, []string{"t", "k", "v"}); err != nil {
+		t.Fatalf("Append() error = %v", err)
+	}
+	if err = writer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	var replayed []wal.Record
+	if _, err = wal.NewReader(dir, nil).Replay(0, func(record wal.Record) error {
+		replayed = append(replayed, record)
+		return nil
+	}); err != nil {
+		t.Fatalf("Replay() after reopening an empty segment error = %v", err)
+	}
+	if len(replayed) != 1 || replayed[0].Command != wal.CommandSet {
+		t.Fatalf("replayed = %#v, want one SET record", replayed)
 	}
 }
 

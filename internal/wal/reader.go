@@ -1,7 +1,6 @@
 package wal
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -23,9 +22,8 @@ func NewReader(dir string, logger *slog.Logger) *Reader {
 	return &Reader{dir: dir, logger: logger}
 }
 
-// Replay applies records newer than afterLSN and returns the last valid LSN.
-// A partial or checksum-invalid record in the final segment is truncated as a
-// crash tail; the same damage in an earlier segment is a startup error.
+// Replay applies records newer than afterLSN and returns the last valid LSN. A partial or checksum-invalid record in
+// the final segment is truncated as a crash tail; the same damage in an earlier segment is a startup error.
 func (r *Reader) Replay(afterLSN uint64, apply func(Record) error) (uint64, error) {
 	segments, err := listNumberedFiles(r.dir, walPrefix, walSuffix)
 	if err != nil {
@@ -59,11 +57,10 @@ func (r *Reader) replaySegment( //nolint:gocyclo // recovery deliberately keeps 
 	lastApplied uint64,
 	apply func(Record) error,
 ) (replayPosition, error) {
-	file, err := os.Open(segment.path)
+	file, reader, err := openWALSegment(segment.path)
 	if err != nil {
 		return replayPosition{}, fmt.Errorf("open WAL segment %s: %w", segment.path, err)
 	}
-	reader := bufio.NewReader(file)
 	position := replayPosition{seen: lastSeen, applied: lastApplied}
 
 	for {

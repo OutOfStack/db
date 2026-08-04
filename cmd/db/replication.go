@@ -14,17 +14,16 @@ import (
 	"github.com/OutOfStack/db/internal/wal"
 )
 
-// replicationRuntime bundles the replication components for a server, exactly
-// one of master/standby is non-nil (both nil for a standalone server).
+// replicationRuntime bundles the replication components for a server, exactly one of master/standby is non-nil (both
+// nil for a standalone server).
 type replicationRuntime struct {
 	master  *replication.Master
 	standby *replication.Standby
 	admin   *replicationAdmin
 }
 
-// setupReplication builds the replication runtime for the configured role. It
-// returns nil for a standalone server. Replication requires the WAL, which the
-// config validation guarantees is enabled for master/standby roles.
+// setupReplication builds the replication runtime for the configured role. It returns nil for a standalone server.
+// Replication requires the WAL, which the config validation guarantees is enabled for master/standby roles.
 func setupReplication(
 	cfg *config.ServerConfig,
 	logger *slog.Logger,
@@ -65,9 +64,8 @@ func setupReplication(
 	}
 }
 
-// startReplication launches replication background work. The returned channel
-// closes when a master stops accepting connections; for a standby the loop is
-// owned by the standby and drained by stopReplication.
+// startReplication launches replication background work. The returned channel closes when a master stops accepting
+// connections; for a standby the loop is owned by the standby and drained by stopReplication.
 func startReplication(ctx context.Context, _ *slog.Logger, repl *replicationRuntime) <-chan struct{} {
 	done := make(chan struct{})
 	if repl == nil {
@@ -107,8 +105,8 @@ func stopReplication(logger *slog.Logger, repl *replicationRuntime) {
 	}
 }
 
-// replicationAdmin implements compute.Admin, handling PROMOTE and REPLICATION
-// STATUS. Its role changes from standby to master on promotion.
+// replicationAdmin implements compute.Admin, handling PROMOTE and REPLICATION STATUS. Its role changes from standby to
+// master on promotion.
 type replicationAdmin struct {
 	store      *storage.Storage
 	writer     *wal.Writer
@@ -123,10 +121,9 @@ type replicationAdmin struct {
 	promotedCancel context.CancelFunc
 }
 
-// Promote flips a standby to master: it stops replication, lifts read-only mode
-// so the server accepts writes, and — when a listen address is configured —
-// starts serving replication so other standbys can be re-aimed here. Demoting
-// the old master remains an operator action.
+// Promote flips a standby to master: it stops replication, lifts read-only mode so the server accepts writes, and —
+// when a listen address is configured — starts serving replication so other standbys can be re-aimed here. Demoting the
+// old master remains an operator action.
 func (a *replicationAdmin) Promote(_ context.Context) (protocol.Reply, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -141,8 +138,7 @@ func (a *replicationAdmin) Promote(_ context.Context) (protocol.Reply, error) {
 	a.logger.Info("Promoted standby to master", "applied_lsn", a.writer.LastLSN())
 
 	if a.listenAddr != "" {
-		// The promoted master outlives this request, so it runs on its own
-		// lifetime context rather than the request context.
+		// The promoted master outlives this request, so it runs on its own lifetime context rather than the request context.
 		if err := a.startMasterLocked(); err != nil { //nolint:contextcheck // intentional: master uses its own lifetime context
 			// Writes are already enabled; log rather than fail the promotion.
 			a.logger.Error("Promoted master could not serve replication", "error", err)
@@ -151,8 +147,7 @@ func (a *replicationAdmin) Promote(_ context.Context) (protocol.Reply, error) {
 	return protocol.SimpleString("OK"), nil
 }
 
-// startMasterLocked starts a replication listener for the promoted node. The
-// caller holds a.mu.
+// startMasterLocked starts a replication listener for the promoted node. The caller holds a.mu.
 func (a *replicationAdmin) startMasterLocked() error {
 	master, err := replication.NewMaster(a.listenAddr, a.writer, a.dir, a.logger)
 	if err != nil {
@@ -166,8 +161,7 @@ func (a *replicationAdmin) startMasterLocked() error {
 	return nil
 }
 
-// close stops a replication listener started by promotion. It is called during
-// server shutdown.
+// close stops a replication listener started by promotion. It is called during server shutdown.
 func (a *replicationAdmin) close() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -181,8 +175,7 @@ func (a *replicationAdmin) close() {
 	}
 }
 
-// Status returns role, applied LSN, lag, and connection state as a flat
-// key/value array reply.
+// Status returns role, applied LSN, lag, and connection state as a flat key/value array reply.
 func (a *replicationAdmin) Status(_ context.Context) (protocol.Reply, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

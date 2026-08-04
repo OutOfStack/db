@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -13,13 +12,11 @@ import (
 	"time"
 
 	"github.com/OutOfStack/db/internal/engine"
-	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/wal"
 )
 
-// Applier persists and applies replicated records. It is satisfied by
-// *storage.Storage, which routes replicated writes through the same lock as
-// snapshots so a snapshot never captures a state ahead of the engine.
+// Applier persists and applies replicated records. It is satisfied by *storage.Storage, which routes replicated writes
+// through the same lock as snapshots so a snapshot never captures a state ahead of the engine.
 type Applier interface {
 	// ApplyReplicated persists a record and applies it to the engine.
 	ApplyReplicated(ctx context.Context, record wal.Record) error
@@ -30,17 +27,11 @@ type Applier interface {
 // defaultReconnectBackoff is the pause between replication reconnect attempts.
 const defaultReconnectBackoff = time.Second
 
-// maxSnapshotRecordSize bounds a single decoded SET command inside a snapshot
-// stream, mirroring the WAL's per-record limit. maxSnapshotBytes bounds the whole
-// snapshot blob so a malformed length cannot drive an unbounded read.
-const (
-	maxSnapshotRecordSize = 64 << 20
-	maxSnapshotBytes      = 1 << 40
-)
+// maxSnapshotBytes bounds the snapshot blob so a malformed length cannot drive an unbounded read.
+const maxSnapshotBytes = 1 << 40
 
-// Standby connects to a master, persists the streamed WAL to its own log, and
-// applies it to its engine in order. It reconnects with backoff and tracks the
-// applied LSN and lag so a promoted standby has a complete, contiguous log.
+// Standby connects to a master, persists the streamed WAL to its own log, and applies it to its engine in order. It
+// reconnects with backoff and tracks the applied LSN and lag so a promoted standby has a complete, contiguous log.
 type Standby struct {
 	masterAddr string
 	applier    Applier
@@ -57,9 +48,8 @@ type Standby struct {
 	done   chan struct{}
 }
 
-// NewStandby creates a standby that replicates from masterAddr into applier (the
-// server's storage). dir is the WAL/snapshot directory. appliedLSN is the last
-// LSN already durable, used as the resume point in the first handshake.
+// NewStandby creates a standby that replicates from masterAddr into applier (the server's storage). dir is the
+// WAL/snapshot directory. appliedLSN is the last LSN already durable, used as the resume point in the first handshake.
 func NewStandby(
 	masterAddr string,
 	applier Applier,
@@ -106,9 +96,8 @@ func (s *Standby) Stop() {
 // AppliedLSN returns the highest LSN this standby has persisted and applied.
 func (s *Standby) AppliedLSN() uint64 { return s.appliedLSN.Load() }
 
-// Lag returns how many LSNs the standby trails the master by, based on the
-// latest record or heartbeat seen. It is a best-effort, eventually-consistent
-// estimate given asynchronous replication.
+// Lag returns how many LSNs the standby trails the master by, based on the latest record or heartbeat seen. It is a
+// best-effort, eventually-consistent estimate given asynchronous replication.
 func (s *Standby) Lag() uint64 {
 	master := s.masterLSN.Load()
 	applied := s.appliedLSN.Load()
@@ -201,9 +190,8 @@ func (s *Standby) applyRecord(ctx context.Context, record wal.Record) error {
 	return nil
 }
 
-// applySnapshot handles a resync: the standby's log was truncated past its
-// position, so the master shipped a full snapshot. The standby persists it,
-// resets its WAL to the snapshot LSN, and replaces its engine state.
+// applySnapshot handles a resync: the standby's log was truncated past its position, so the master shipped a full
+// snapshot. The standby persists it, resets its WAL to the snapshot LSN, and replaces its engine state.
 func (s *Standby) applySnapshot(ctx context.Context, reader *bufio.Reader) error {
 	lsn, err := readUint64(reader)
 	if err != nil {
@@ -246,20 +234,11 @@ func (s *Standby) observeMasterLSN(lsn uint64) {
 func parseSnapshot(reader *bufio.Reader, length int64) ([]engine.Entry, error) {
 	limited := bufio.NewReader(io.LimitReader(reader, length))
 	var entries []engine.Entry
-	for {
-		command, args, err := protocol.ReadCommand(limited, maxSnapshotRecordSize)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, err
-		}
-		if command != wal.CommandSet || len(args) != 3 {
-			return nil, fmt.Errorf("invalid snapshot record %q with %d args", command, len(args))
-		}
-		entries = append(entries, engine.Entry{Table: args[0], Key: args[1], Value: args[2]})
-	}
-	return entries, nil
+	err := wal.ReadSnapshot(limited, func(table, key, value string) error {
+		entries = append(entries, engine.Entry{Table: table, Key: key, Value: value})
+		return nil
+	})
+	return entries, err
 }
 
 func readUint64(reader *bufio.Reader) (uint64, error) {

@@ -58,16 +58,14 @@ func defaultOptions() *options {
 // Option configures a Client
 type Option func(*options)
 
-// WithAddress sets the server address for single-server mode.
-// Ignored when WithServers is also provided
+// WithAddress sets the server address for single-server mode. Ignored when WithServers is also provided
 func WithAddress(addr string) Option {
 	return func(o *options) {
 		o.address = addr
 	}
 }
 
-// WithServers enables pool mode with the given servers.
-// At least one server must have RoleMaster
+// WithServers enables pool mode with the given servers. At least one server must have RoleMaster
 func WithServers(servers ...Server) Option {
 	return func(o *options) {
 		o.servers = servers

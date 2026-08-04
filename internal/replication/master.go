@@ -14,14 +14,13 @@ import (
 	"github.com/OutOfStack/db/internal/wal"
 )
 
-// defaultHeartbeatInterval is how often the master emits a heartbeat frame to an
-// otherwise-idle standby so it can keep its lag estimate current.
+// defaultHeartbeatInterval is how often the master emits a heartbeat frame to an otherwise-idle standby so it can keep
+// its lag estimate current.
 const defaultHeartbeatInterval = time.Second
 
-// Master streams the WAL to connecting standbys. It combines historical segment
-// files on disk with a live fan-out from the WAL writer, so a standby resumes
-// from any LSN: a fresh or lagging standby catches up from segments (or a
-// snapshot when its position was already truncated), then tails live commits.
+// Master streams the WAL to connecting standbys. It combines historical segment files on disk with a live fan-out from
+// the WAL writer, so a standby resumes from any LSN: a fresh or lagging standby catches up from segments (or a snapshot
+// when its position was already truncated), then tails live commits.
 type Master struct {
 	writer   *wal.Writer
 	dir      string
@@ -32,8 +31,8 @@ type Master struct {
 	wg                sync.WaitGroup
 }
 
-// NewMaster starts listening for standby connections on listenAddr. writer and
-// dir are the server's live WAL writer and its data directory.
+// NewMaster starts listening for standby connections on listenAddr. writer and dir are the server's live WAL writer and
+// its data directory.
 func NewMaster(listenAddr string, writer *wal.Writer, dir string, logger *slog.Logger) (*Master, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -110,10 +109,9 @@ func (m *Master) stream(ctx context.Context, w *bufio.Writer, requestedLSN uint6
 	defer ticker.Stop()
 
 	for {
-		// Re-check retention every iteration: the snapshot loop may have pruned
-		// the records this standby still needs since the last pass, so a gap
-		// recovery must resync from a snapshot rather than ship a non-contiguous
-		// LSN that the standby would reject.
+		// Re-check retention every iteration: the snapshot loop may have pruned the records this standby still needs since
+		// the last pass, so a gap recovery must resync from a snapshot rather than ship a non-contiguous LSN that the standby
+		// would reject.
 		oldest, err := wal.OldestRecordLSN(m.dir, m.writer.LastLSN()+1)
 		if err != nil {
 			return err
@@ -143,9 +141,8 @@ func (m *Master) stream(ctx context.Context, w *bufio.Writer, requestedLSN uint6
 	}
 }
 
-// consumeLive streams live records until a gap is detected (a record was dropped
-// from the buffered fan-out), the context ends, or a write fails. A returned
-// gap==true tells the caller to re-scan disk segments to recover the missed
+// consumeLive streams live records until a gap is detected (a record was dropped from the buffered fan-out), the
+// context ends, or a write fails. A returned gap==true tells the caller to re-scan disk segments to recover the missed
 // records before resuming the live tail.
 func (m *Master) consumeLive(
 	ctx context.Context,
@@ -165,10 +162,9 @@ func (m *Master) consumeLive(
 			if err := w.Flush(); err != nil {
 				return false, err
 			}
-			// A record can be dropped from the buffered fan-out during a burst; if
-			// the burst then stops, no later record arrives to reveal the gap. The
-			// heartbeat is our backstop: whenever the committed tail is ahead of
-			// what we have shipped, recover the missing records from disk.
+			// A record can be dropped from the buffered fan-out during a burst; if the burst then stops, no later record arrives
+			// to reveal the gap. The heartbeat is our backstop: whenever the committed tail is ahead of what we have shipped,
+			// recover the missing records from disk.
 			if m.writer.LastLSN() >= *nextLSN {
 				return true, nil
 			}

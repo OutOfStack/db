@@ -76,8 +76,7 @@ func New() *Engine {
 	}
 }
 
-// Range calls fn for every stored value while holding a read lock. Iteration
-// stops when fn returns false.
+// Range calls fn for every stored value while holding a read lock. Iteration stops when fn returns false.
 func (e *Engine) Range(fn func(table, key, value string) bool) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -91,9 +90,8 @@ func (e *Engine) Range(fn func(table, key, value string) bool) {
 	}
 }
 
-// Reset removes all stored data. A standby calls it during snapshot resync,
-// before loading the master's snapshot, since the snapshot fully replaces the
-// standby's superseded state.
+// Reset removes all stored data. A standby calls it during snapshot resync, before loading the master's snapshot, since
+// the snapshot fully replaces the standby's superseded state.
 func (e *Engine) Reset() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -107,9 +105,8 @@ func (e *Engine) Load(_ context.Context, entries []Entry) {
 	e.load(entries)
 }
 
-// Replace atomically swaps all stored data for entries under a single lock, so a
-// concurrent reader never observes the empty intermediate state that separate
-// Reset + Load calls would expose. Used by snapshot resync on a serving standby.
+// Replace atomically swaps all stored data for entries under a single lock, so a concurrent reader never observes the
+// empty intermediate state that separate Reset + Load calls would expose. Used by snapshot resync on a serving standby.
 func (e *Engine) Replace(entries []Entry) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -155,6 +152,30 @@ func (e *Engine) Get(_ context.Context, table, key string) (string, error) {
 	}
 
 	return val, nil
+}
+
+// Update atomically replaces the value of key with what fn returns. fn receives the stored value and whether it exists,
+// and runs while the engine is locked, so no concurrent write can slip between its read and its write. It is the
+// primitive behind the read-modify-write commands (INCR, APPEND, HSET); an error from fn leaves the store untouched.
+func (e *Engine) Update(_ context.Context, table, key string, fn func(old string, exists bool) (string, error)) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	t, tableExists := e.store[table]
+	if !tableExists {
+		t = make(map[string]string)
+	}
+	old, exists := t[key]
+	value, err := fn(old, exists)
+	if err != nil {
+		return err
+	}
+	if !tableExists {
+		e.store[table] = t // publish a new table only once the update succeeded
+	}
+	t[key] = value
+
+	return nil
 }
 
 // Del deletes the value for a given key in a table, removing the table when it becomes empty

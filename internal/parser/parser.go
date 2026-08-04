@@ -19,24 +19,40 @@ type Parser struct{}
 
 type commandSpec struct {
 	args     int
+	optional int
 	readOnly bool
-	// admin marks a control-plane command (e.g. replication management) whose
-	// arguments are not table-scoped and so skip table/key validation.
+	// admin marks a control-plane command (e.g. replication management) whose arguments are not table-scoped and so skip
+	// table/key validation.
 	admin bool
 	usage string
 }
 
-// commands is the central command registry used for validation and future
-// read/write routing.
+// commands is the central command registry used for validation and future read/write routing.
 var commands = map[string]commandSpec{ //nolint:gochecknoglobals // a single registry is intentional
-	"SET":         {args: 3, readOnly: false, usage: "SET <table> <key> <value>"},
-	"GET":         {args: 2, readOnly: true, usage: "GET <table> <key>"},
-	"DEL":         {args: 2, readOnly: false, usage: "DEL <table> <key>"},
-	commandTables: {args: 0, readOnly: true, usage: commandTables},
-	"EXISTS":      {args: 1, readOnly: true, usage: "EXISTS <table>"},
-	"KEYS":        {args: 1, readOnly: true, usage: "KEYS <table>"},
+	"SET":          {args: 3, readOnly: false, usage: "SET <table> <key> <value>"},
+	"GET":          {args: 2, readOnly: true, usage: "GET <table> <key>"},
+	"DEL":          {args: 2, readOnly: false, usage: "DEL <table> <key>"},
+	commandTables:  {args: 0, readOnly: true, usage: commandTables},
+	"EXISTS":       {args: 1, readOnly: true, usage: "EXISTS <table>"},
+	"KEYS":         {args: 1, readOnly: true, usage: "KEYS <table>"},
+	"INCR":         {args: 2, optional: 1, readOnly: false, usage: "INCR <table> <key> [delta]"},
+	"APPEND":       {args: 3, readOnly: false, usage: "APPEND <table> <key> <value>"},
+	"HSET":         {args: 4, readOnly: false, usage: "HSET <table> <key> <field> <value>"},
+	"HGET":         {args: 3, readOnly: true, usage: "HGET <table> <key> <field>"},
+	"TYPE":         {args: 2, readOnly: true, usage: "TYPE <table> <key>"},
 	commandPromote: {args: 0, readOnly: false, admin: true, usage: commandPromote},
-	"REPLICATION": {args: 1, readOnly: true, admin: true, usage: "REPLICATION STATUS"},
+	"REPLICATION":  {args: 1, readOnly: true, admin: true, usage: "REPLICATION STATUS"},
+}
+
+// IsWrite reports whether cmd mutates state and so has to be routed to a master. The pool asks this rather than keeping
+// its own list: a command whose two classifications disagree is sent to a standby, refused with "ERR readonly", and not
+// retried, because the caller that would fail it over believes it was a read.
+//
+// An unknown command is not a write — the server rejects it either way. Neither are the control-plane commands: PROMOTE
+// mutates, but it is aimed at one specific node, not at whichever server currently holds the master role.
+func IsWrite(cmd string) bool {
+	spec, ok := commands[strings.ToUpper(strings.TrimSpace(cmd))]
+	return ok && !spec.readOnly && !spec.admin
 }
 
 // New creates a new Parser instance.
@@ -55,7 +71,7 @@ func (p *Parser) Parse(cmd string, args []string) (string, []string, error) {
 	if !ok {
 		return "", nil, errors.New("unknown command: " + cmd)
 	}
-	if len(args) != spec.args {
+	if len(args) < spec.args || len(args) > spec.args+spec.optional {
 		return "", nil, fmt.Errorf("%s requires %d arguments: %s", cmd, spec.args, spec.usage)
 	}
 
