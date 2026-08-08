@@ -55,6 +55,13 @@ func IsWrite(cmd string) bool {
 	return ok && !spec.readOnly && !spec.admin
 }
 
+// IsAdmin reports whether cmd is a control-plane command aimed at one specific node (e.g. PROMOTE). The pool refuses
+// to route these: it cannot promise which server a pooled command reaches.
+func IsAdmin(cmd string) bool {
+	spec, ok := commands[strings.ToUpper(strings.TrimSpace(cmd))]
+	return ok && spec.admin
+}
+
 // New creates a new Parser instance.
 func New() *Parser {
 	return &Parser{}

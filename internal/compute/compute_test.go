@@ -121,7 +121,7 @@ func TestHandleRequest_AdminRouting(t *testing.T) {
 	mockStorage := mocks.NewMockStorage(ctrl)
 	admin := &fakeAdmin{}
 	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
-	c := compute.New(parser.New(), mockStorage, logger, compute.WithAdmin(admin))
+	c := compute.New(parser.New(), mockStorage, logger, compute.WithAdmin(admin), compute.WithPromoteEnabled(true))
 	ctx := t.Context()
 
 	res, err := c.HandleRequest(ctx, "PROMOTE", nil)
@@ -147,4 +147,26 @@ func TestHandleRequest_AdminDisabled(t *testing.T) {
 	_, err := c.HandleRequest(t.Context(), "PROMOTE", nil)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "replication not enabled")
+}
+
+// TestHandleRequest_PromoteRefusedByDefault verifies remote promotion stays off unless the operator opts in via
+// replication.allow_remote_promote, while REPLICATION STATUS remains available.
+func TestHandleRequest_PromoteRefusedByDefault(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockStorage := mocks.NewMockStorage(ctrl)
+	admin := &fakeAdmin{}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	c := compute.New(parser.New(), mockStorage, logger, compute.WithAdmin(admin))
+
+	_, err := c.HandleRequest(t.Context(), "PROMOTE", nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "allow_remote_promote")
+	require.False(t, admin.promoted)
+
+	res, err := c.HandleRequest(t.Context(), "REPLICATION", []string{"STATUS"})
+	require.NoError(t, err)
+	require.Equal(t, protocol.ReplyArray, res.Kind)
 }

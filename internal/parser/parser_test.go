@@ -100,3 +100,23 @@ func TestIsWrite(t *testing.T) {
 		t.Error(`IsWrite("  set  ") = false, want true`)
 	}
 }
+
+// TestIsAdmin pins down which commands the pool refuses to route: control-plane commands target one specific node.
+func TestIsAdmin(t *testing.T) {
+	tests := map[string]bool{
+		"PROMOTE":     true,
+		"REPLICATION": true,
+		"SET":         false,
+		"GET":         false,
+		"NONSENSE":    false,
+	}
+	for cmd, want := range tests {
+		if got := parser.IsAdmin(cmd); got != want {
+			t.Errorf("IsAdmin(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+
+	if !parser.IsAdmin("  promote  ") {
+		t.Error(`IsAdmin("  promote  ") = false, want true`)
+	}
+}

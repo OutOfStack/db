@@ -28,10 +28,11 @@ type Admin interface {
 
 // Compute represents compute layer
 type Compute struct {
-	parser  Parser
-	storage Storage
-	admin   Admin
-	logger  *slog.Logger
+	parser         Parser
+	storage        Storage
+	admin          Admin
+	promoteEnabled bool
+	logger         *slog.Logger
 }
 
 // Option configures a Compute.
@@ -40,6 +41,12 @@ type Option func(*Compute)
 // WithAdmin wires a replication admin handler for PROMOTE and REPLICATION STATUS.
 func WithAdmin(admin Admin) Option {
 	return func(c *Compute) { c.admin = admin }
+}
+
+// WithPromoteEnabled permits PROMOTE when enabled is true. Off by default: promotion changes which node accepts
+// writes, so it has to be an explicit operator decision (replication.allow_remote_promote in the server config).
+func WithPromoteEnabled(enabled bool) Option {
+	return func(c *Compute) { c.promoteEnabled = enabled }
 }
 
 // New creates a new Compute with the given parser, storage, and logger
@@ -85,6 +92,9 @@ func (c *Compute) handleAdmin(ctx context.Context, cmd string, args []string) (p
 	case "PROMOTE":
 		if c.admin == nil {
 			return protocol.Reply{}, true, errors.New("replication not enabled")
+		}
+		if !c.promoteEnabled {
+			return protocol.Reply{}, true, errors.New("PROMOTE is disabled; set replication.allow_remote_promote to enable it")
 		}
 		reply, err := c.admin.Promote(ctx)
 		return reply, true, err

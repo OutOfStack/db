@@ -80,6 +80,8 @@ func newLogger(cfg config.ServerLoggingConfig) (*slog.Logger, func() error, erro
 }
 
 func run(cfg *config.ServerConfig, logger *slog.Logger) error {
+	logSupportBoundary(cfg, logger)
+
 	dbEngine, walWriter, snapshotLSN, err := buildEngine(cfg, logger)
 	if err != nil {
 		return err
@@ -111,10 +113,27 @@ func run(cfg *config.ServerConfig, logger *slog.Logger) error {
 
 	var computeOptions []compute.Option
 	if repl != nil {
-		computeOptions = append(computeOptions, compute.WithAdmin(repl.admin))
+		computeOptions = append(computeOptions,
+			compute.WithAdmin(repl.admin),
+			compute.WithPromoteEnabled(cfg.Replication.AllowRemotePromote))
 	}
 	comp := compute.New(parser.New(), store, logger, computeOptions...)
 	return serve(cfg, logger, comp, store, walWriter, repl, snapshotLSN)
+}
+
+// logSupportBoundary warns when the configuration selects features outside the GA support boundary: the tiered engine
+// and replication are previews with limited support, and an in-memory engine without a WAL holds data only until
+// shutdown. The tiered engine runs without a WAL by design (it keeps its own durable store), so it is not ephemeral.
+func logSupportBoundary(cfg *config.ServerConfig, logger *slog.Logger) {
+	if cfg.Engine.Type == engine.TypeTiered {
+		logger.Warn("Preview feature enabled: tiered engine")
+	}
+	if cfg.Replication.Role != config.RoleStandalone {
+		logger.Warn("Preview feature enabled: replication", "role", cfg.Replication.Role)
+	}
+	if !cfg.WAL.Enabled && cfg.Engine.Type == engine.TypeInMemory {
+		logger.Warn("Ephemeral mode: WAL disabled, data is lost on shutdown")
+	}
 }
 
 // buildEngine constructs the configured storage engine. The tiered engine keeps its own durable segment store (no WAL);

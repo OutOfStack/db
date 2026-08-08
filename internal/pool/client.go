@@ -59,10 +59,14 @@ func NewClient(config *PoolConfig, options ...network.TCPClientOption) (*Client,
 	}, nil
 }
 
-// Send sends a command using the pool, with automatic failover. Mutating commands route to a master; reads follow the
-// configured strategy. A standby that replies "ERR readonly" to a write marks the routing stale, so the pool fails that
-// server over and retries against another master.
+// Send sends a command using the pool. Mutating commands route to the master; reads follow the configured strategy and
+// retry on another server after a failure. A server that replies "ERR readonly" to a write marks the routing stale, so
+// the pool treats it as failed and retries. Admin commands are refused client-side: they target one specific node, and
+// the pool cannot promise which server a routed command reaches.
 func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
+	if parser.IsAdmin(cmd) {
+		return protocol.Reply{}, fmt.Errorf("admin command %s cannot be sent through a pool; connect to the target server directly", cmd)
+	}
 	write := parser.IsWrite(cmd)
 	var lastErr error
 	attempts := 0
@@ -100,8 +104,9 @@ func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
 			continue
 		}
 
-		// A write that reached a read-only server means our master routing is stale (the server was demoted); fail it over
-		// and retry elsewhere.
+		// A write that reached a read-only server means our master routing is stale (the server was demoted); mark it
+		// failed and retry. A pool holds one master, so the retry revisits it: the attempts drain and the caller gets the
+		// read-only error rather than a false success.
 		if write && isReadOnlyReply(resp) {
 			c.selector.MarkFailed(server.Address)
 			lastErr = fmt.Errorf("server %s is read-only", server.Address)

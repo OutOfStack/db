@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"log/slog"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -38,6 +40,59 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// TestLogSupportBoundary verifies the startup warnings fire exactly when a preview feature (tiered engine,
+// replication) or ephemeral mode (in-memory without WAL) is selected.
+func TestLogSupportBoundary(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		change    func(*config.ServerConfig)
+		preview   bool
+		ephemeral bool
+	}{
+		{
+			name:      "default in-memory without WAL is ephemeral",
+			change:    func(_ *config.ServerConfig) {},
+			ephemeral: true,
+		},
+		{
+			name:   "in-memory with WAL is fully supported",
+			change: func(c *config.ServerConfig) { c.WAL.Enabled = true },
+		},
+		{
+			name:    "tiered engine is preview, not ephemeral",
+			change:  func(c *config.ServerConfig) { c.Engine.Type = engine.TypeTiered },
+			preview: true,
+		},
+		{
+			name: "replication is preview",
+			change: func(c *config.ServerConfig) {
+				c.WAL.Enabled = true
+				c.Replication.Role = config.RoleStandby
+			},
+			preview: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.DefaultServerConfig()
+			tt.change(cfg)
+
+			var buf bytes.Buffer
+			logSupportBoundary(cfg, slog.New(slog.NewTextHandler(&buf, nil)))
+
+			out := buf.String()
+			if got := strings.Contains(out, "Preview"); got != tt.preview {
+				t.Errorf("log output %q: preview warning = %v, want %v", out, got, tt.preview)
+			}
+			if got := strings.Contains(out, "Ephemeral"); got != tt.ephemeral {
+				t.Errorf("log output %q: ephemeral warning = %v, want %v", out, got, tt.ephemeral)
+			}
+		})
+	}
 }
 
 // TestPromoteServesReplication promotes a standby and verifies it both accepts writes and serves replication to a

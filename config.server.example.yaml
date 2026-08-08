@@ -1,11 +1,12 @@
 # Example server configuration file. Copy this to config.yaml and modify as needed
 
 engine:
-  type: "in_memory"          # "in_memory" (RAM-only) or "tiered" (memory/disk)
+  type: "in_memory"          # "in_memory" (RAM-only) or "tiered" (memory/disk, preview)
 
-  # The "tiered" engine lets the dataset grow beyond RAM: an append-only on-disk segment store is the source of truth, a
-  # full in-memory keydir indexes every key, and an LRU cache holds hot values. It provides its own durability, so it
-  # cannot be combined with wal.enabled or replication. The fields below apply only when type is "tiered".
+  # The "tiered" engine (preview) lets the dataset grow beyond RAM: an append-only on-disk segment store is the source
+  # of truth, a full in-memory keydir indexes every key, and an LRU cache holds hot values. It provides its own
+  # durability, so it cannot be combined with wal.enabled or replication. The fields below apply only when type is
+  # "tiered".
   data_dir: "data"           # directory for the tiered segment store
   max_memory: 64             # MiB of hot values kept in RAM (LRU budget)
   max_storage: 1024          # MiB ceiling on live data; SET returns "ERR storage full" beyond it
@@ -14,8 +15,9 @@ engine:
   compaction_threshold: 0.5  # reclaim a sealed segment once this fraction is dead bytes
   compaction_interval: 30s   # how often to compact and log cache/disk stats
 
-# The WAL is off by default: the in-memory engine runs without touching disk until persistence is asked for. It cannot
-# be combined with engine.type tiered, which keeps its own durable store.
+# The WAL is off by default: the in-memory engine runs without touching disk until persistence is asked for. That is
+# ephemeral mode — data lives only in RAM and is lost on shutdown. The WAL cannot be combined with engine.type tiered,
+# which keeps its own durable store.
 wal:
   enabled: false
   data_dir: "data"
@@ -23,8 +25,9 @@ wal:
   segment_size: 64          # MiB
   snapshot_interval: 5m
 
-# Replication ships the WAL from a master to standbys (asynchronous). It requires wal.enabled. Leave role empty for a
-# standalone server.
+# Replication (preview) ships the WAL from a master to standbys (asynchronous). It requires wal.enabled. Leave role
+# empty for a standalone server. Standby reads may be stale, and failover is manual: isolate the old master, PROMOTE a
+# standby, and repoint clients.
 replication:
   role: ""                        # "", "master", or "standby"
   # master: address standbys connect to for the WAL stream. standby (optional): if set, PROMOTE starts serving
@@ -33,6 +36,9 @@ replication:
   # standby: the master's listen_address to replicate from.
   master_address: ""              # e.g. "127.0.0.1:3224"
   reconnect_backoff: 1s           # standby: pause between reconnect attempts
+  # standby: permit the PROMOTE command over the client port. Off by default — promotion changes which node accepts
+  # writes, so it has to be an explicit operator decision.
+  allow_remote_promote: false
 
 network:
   address: "127.0.0.1:3223"
