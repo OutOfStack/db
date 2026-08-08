@@ -47,27 +47,24 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 func TestLogSupportBoundary(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name    string
-		change  func(*config.ServerConfig)
-		want    []string
-		notWant []string
+		name      string
+		change    func(*config.ServerConfig)
+		preview   bool
+		ephemeral bool
 	}{
 		{
-			name:    "default in-memory without WAL is ephemeral",
-			change:  func(_ *config.ServerConfig) {},
-			want:    []string{"Ephemeral"},
-			notWant: []string{"Preview"},
+			name:      "default in-memory without WAL is ephemeral",
+			change:    func(_ *config.ServerConfig) {},
+			ephemeral: true,
 		},
 		{
-			name:    "in-memory with WAL is fully supported",
-			change:  func(c *config.ServerConfig) { c.WAL.Enabled = true },
-			notWant: []string{"Ephemeral", "Preview"},
+			name:   "in-memory with WAL is fully supported",
+			change: func(c *config.ServerConfig) { c.WAL.Enabled = true },
 		},
 		{
 			name:    "tiered engine is preview, not ephemeral",
 			change:  func(c *config.ServerConfig) { c.Engine.Type = engine.TypeTiered },
-			want:    []string{"Preview"},
-			notWant: []string{"Ephemeral"},
+			preview: true,
 		},
 		{
 			name: "replication is preview",
@@ -75,8 +72,7 @@ func TestLogSupportBoundary(t *testing.T) {
 				c.WAL.Enabled = true
 				c.Replication.Role = config.RoleStandby
 			},
-			want:    []string{"Preview"},
-			notWant: []string{"Ephemeral"},
+			preview: true,
 		},
 	}
 	for _, tt := range tests {
@@ -88,15 +84,12 @@ func TestLogSupportBoundary(t *testing.T) {
 			var buf bytes.Buffer
 			logSupportBoundary(cfg, slog.New(slog.NewTextHandler(&buf, nil)))
 
-			for _, want := range tt.want {
-				if !strings.Contains(buf.String(), want) {
-					t.Errorf("log output %q missing %q", buf.String(), want)
-				}
+			out := buf.String()
+			if got := strings.Contains(out, "Preview"); got != tt.preview {
+				t.Errorf("log output %q: preview warning = %v, want %v", out, got, tt.preview)
 			}
-			for _, notWant := range tt.notWant {
-				if strings.Contains(buf.String(), notWant) {
-					t.Errorf("log output %q contains unwanted %q", buf.String(), notWant)
-				}
+			if got := strings.Contains(out, "Ephemeral"); got != tt.ephemeral {
+				t.Errorf("log output %q: ephemeral warning = %v, want %v", out, got, tt.ephemeral)
 			}
 		})
 	}

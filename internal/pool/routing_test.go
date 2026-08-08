@@ -186,15 +186,9 @@ func TestClient_RejectsAdminCommands(t *testing.T) {
 		{Address: masterAddr, Role: pool.RoleMaster},
 	}, pool.StrategyMasterFirst)
 
-	for _, tc := range []struct {
-		cmd  string
-		args []string
-	}{
-		{cmd: "PROMOTE"},
-		{cmd: "REPLICATION", args: []string{"STATUS"}},
-	} {
-		if _, err := client.Send(tc.cmd, tc.args); err == nil {
-			t.Errorf("Send %s through the pool succeeded, want error", tc.cmd)
+	for _, cmd := range []string{"PROMOTE", "REPLICATION"} {
+		if _, err := client.Send(cmd, nil); err == nil {
+			t.Errorf("Send %s through the pool succeeded, want error", cmd)
 		}
 	}
 	if hits.Load() != 0 {

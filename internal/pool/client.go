@@ -65,8 +65,7 @@ func NewClient(config *PoolConfig, options ...network.TCPClientOption) (*Client,
 // the pool cannot promise which server a routed command reaches.
 func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
 	if parser.IsAdmin(cmd) {
-		return protocol.Reply{}, fmt.Errorf("admin command %s cannot be sent through a pool; connect to the target server directly",
-			strings.ToUpper(strings.TrimSpace(cmd)))
+		return protocol.Reply{}, fmt.Errorf("admin command %s cannot be sent through a pool; connect to the target server directly", cmd)
 	}
 	write := parser.IsWrite(cmd)
 	var lastErr error
@@ -105,8 +104,9 @@ func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
 			continue
 		}
 
-		// A write that reached a read-only server means our master routing is stale (the server was demoted); fail it over
-		// and retry elsewhere.
+		// A write that reached a read-only server means our master routing is stale (the server was demoted); mark it
+		// failed and retry. A pool holds one master, so the retry revisits it: the attempts drain and the caller gets the
+		// read-only error rather than a false success.
 		if write && isReadOnlyReply(resp) {
 			c.selector.MarkFailed(server.Address)
 			lastErr = fmt.Errorf("server %s is read-only", server.Address)
