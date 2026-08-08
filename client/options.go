@@ -12,15 +12,16 @@ const (
 	RoleStandby Role = "standby"
 )
 
-// Strategy defines how servers are selected from the pool
+// Strategy defines how servers are selected from the pool for reads. Writes always route to the master regardless of
+// strategy.
 type Strategy string
 
 const (
-	// MasterFirst tries master servers first, falls back to standby
+	// MasterFirst reads from the master first, falling back to standbys on failure
 	MasterFirst Strategy = "master_first"
-	// RoundRobin rotates through all servers
+	// RoundRobin rotates reads through all servers
 	RoundRobin Strategy = "round_robin"
-	// Random picks a random server
+	// Random picks a random server for each read
 	Random Strategy = "random"
 )
 
@@ -65,7 +66,7 @@ func WithAddress(addr string) Option {
 	}
 }
 
-// WithServers enables pool mode with the given servers. At least one server must have RoleMaster
+// WithServers enables pool mode with the given servers. Exactly one server must have RoleMaster
 func WithServers(servers ...Server) Option {
 	return func(o *options) {
 		o.servers = servers

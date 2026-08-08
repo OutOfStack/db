@@ -96,6 +96,9 @@ func (p *PoolConfig) validateServers() error {
 	if masterCount == 0 {
 		return errors.New("at least one master server is required")
 	}
+	if masterCount > 1 {
+		return errors.New("at most one master server is allowed")
+	}
 
 	return nil
 }

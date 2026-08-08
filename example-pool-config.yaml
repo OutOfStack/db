@@ -6,24 +6,25 @@ network:
   idle_timeout: 1m
 
 pool:
-  # Enable connection pool with master/standby servers
+  # Enable connection pool with master/standby servers. Replication is a preview feature: standby reads may be stale
+  # (WAL shipping is asynchronous), and writes always go to the single master — they fail while it is down.
   enabled: true
 
-  # List of servers in the pool
+  # List of servers in the pool: exactly one master, any number of standbys
   servers:
     - address: "127.0.0.1:3223"
       role: master
     - address: "127.0.0.1:3224"
-      role: master
+      role: standby
     - address: "127.0.0.1:3225"
       role: standby
     - address: "127.0.0.1:3226"
       role: standby
 
-  # Selection strategy: master_first, round_robin, or random
-  # - master_first: Try master servers first, fall back to standby on failure
-  # - round_robin: Rotate through all servers in order
-  # - random: Pick servers randomly
+  # Selection strategy for reads (writes always route to the master): master_first, round_robin, or random
+  # - master_first: Read from the master first, fall back to standbys on failure
+  # - round_robin: Rotate reads through all servers in order
+  # - random: Pick a server randomly for each read
   selection_strategy: master_first
 
   # Maximum number of retry attempts when a server fails
