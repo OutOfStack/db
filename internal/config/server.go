@@ -45,6 +45,9 @@ type ServerReplicationConfig struct {
 	ListenAddress    string        `yaml:"listen_address"`
 	MasterAddress    string        `yaml:"master_address"`
 	ReconnectBackoff time.Duration `yaml:"reconnect_backoff"`
+	// AllowRemotePromote permits the PROMOTE command over the client port. Off by default: promotion changes which node
+	// accepts writes, so it has to be an explicit operator decision.
+	AllowRemotePromote bool `yaml:"allow_remote_promote"`
 }
 
 // ServerWALConfig controls durable write-ahead logging and snapshots. SegmentSizeMB is measured in MiB.

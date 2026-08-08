@@ -1,6 +1,7 @@
-# Simple Database Server
+# Simple! Database Server
 
-A distributed key-value database with TCP server and CLI client written in Go.
+A networked key-value database with TCP server and CLI client written in Go. Replication is available as a preview
+feature (see [Support Boundary](#support-boundary)).
 
 ## Architecture
 
@@ -17,17 +18,40 @@ The project consists of three main components:
 - Structured logging with configurable levels
 - Graceful shutdown with proper resource cleanup
 - Command-line interface for database operations
-- Two storage engines: `in_memory` (RAM-only) and `tiered`, whose dataset grows past RAM by keeping values in on-disk
-  segments behind an LRU cache
+- Two storage engines: `in_memory` (RAM-only) and `tiered` (preview), whose dataset grows past RAM by keeping values
+  in on-disk segments behind an LRU cache
 - Tables: keys are scoped per table, created implicitly on first write
 - Typed values (string, int, float, bool, array, map) with server-side atomic operations: `INCR`, `APPEND`,
   `HSET`/`HGET`, `TYPE`
 - Durability: write-ahead log with `always`/`everysec`/`no` fsync policies, periodic snapshots, and crash recovery that
   truncates a torn tail
-- Replication: asynchronous master/standby WAL shipping with manual `PROMOTE`
+- Replication (preview): asynchronous master/standby WAL shipping with manual `PROMOTE`
 - Connection limiting to prevent resource exhaustion
-- **Master/Standby Connection Pooling** with automatic failover
+- **Master/Standby Connection Pooling** with read failover and retry; writes reroute only after a manual promotion
 - Configurable server selection strategies (master_first, round_robin, random)
+
+## Support Boundary
+
+Generally available, supported for production use:
+
+- The `in_memory` engine with WAL persistence and snapshots
+- The public Go client library and the CLI
+- The documented RESP2 command subset and typed literals
+- Deployment on loopback or an explicitly trusted private network
+
+Preview — limited support, marked by a startup warning:
+
+- The `tiered` engine
+- Replication: master/standby WAL shipping, standby reads, and `PROMOTE`
+- Ephemeral mode (the in-memory engine with `wal.enabled: false`): data lives only in RAM and is lost on shutdown.
+  Note this is the default configuration — durability is opted into by setting `wal.enabled: true`
+
+Preview caveats:
+
+- Standby reads may be stale: replication is asynchronous, with no read-your-writes guarantee
+- There is no automatic write failover. If the master fails, writes fail until an operator isolates the old master,
+  promotes a standby with `PROMOTE` (requires `replication.allow_remote_promote`), and points clients at the new master
+- A pool routes writes to its single configured master; configs listing more than one master are rejected
 
 ## Commands
 
@@ -213,6 +237,7 @@ with `wal.enabled` or replication — the server refuses that combination at sta
   start serving replication from this node
 - **replication.master_address**: Standby: the master to replicate from
 - **replication.reconnect_backoff**: Standby: pause between reconnect attempts
+- **replication.allow_remote_promote**: Standby: permit the `PROMOTE` command over the client port (default `false`)
 - **network.address**: Server listening address
 - **network.max_connections**: Maximum concurrent client connections (enforced by server)
 - **network.max_message_size**: Maximum message size in KB
@@ -297,7 +322,7 @@ network:
 
 ### Client with Connection Pool
 
-For distributed deployments with master/standby servers:
+For a master/standby deployment (exactly one master per pool):
 
 ```yaml
 network:
@@ -312,7 +337,7 @@ pool:
     - address: "127.0.0.1:3223"
       role: master
     - address: "127.0.0.1:3224"
-      role: master
+      role: standby
     - address: "127.0.0.1:3225"
       role: standby
 
@@ -440,7 +465,7 @@ err = c.HSet(ctx, "users", "u1", "name", "Alice")
 name, err := c.HGet(ctx, "users", "u1", "name") // ErrNotFound if the field is missing
 ```
 
-For distributed deployments, configure a connection pool instead of a single address:
+For master/standby deployments, configure a connection pool instead of a single address:
 
 ```go
 c, err := client.New(
@@ -560,10 +585,13 @@ The server implements connection limiting to prevent resource exhaustion:
 
 ## Connection Pooling (Client-side)
 
-The client supports connection pooling for distributed deployments:
+The client supports connection pooling for master/standby deployments:
 
-- **Multiple Servers**: Configure multiple server addresses with master/standby roles
-- **Automatic Failover**: Failed servers are temporarily excluded and automatically retried after a timeout
+- **Multiple Servers**: Configure multiple server addresses with master/standby roles (exactly one master)
+- **Read Failover**: Failed servers are temporarily excluded and retried after a timeout; reads fall back to other
+  servers, while writes fail with the master down until a standby is manually promoted and clients are reconfigured
+- **Admin Commands**: `PROMOTE` and `REPLICATION` are refused in pool mode — they target one specific node, so connect
+  to that server directly
 - **Selection Strategies**: Choose how servers are selected (master_first, round_robin, random)
 - **Connection Caching**: Established connections are reused to minimize overhead
 - **Concurrent Safety**: Serialized sends prevent TCP message corruption from concurrent requests

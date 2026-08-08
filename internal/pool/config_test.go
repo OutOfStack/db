@@ -57,6 +57,18 @@ func TestPoolConfig_Validate(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "pool with two masters",
+			config: &pool.PoolConfig{
+				Enabled: true,
+				Servers: []pool.ServerConfig{
+					{Address: "127.0.0.1:3223", Role: pool.RoleMaster},
+					{Address: "127.0.0.1:3224", Role: pool.RoleMaster},
+				},
+				SelectionStrategy: pool.StrategyMasterFirst,
+			},
+			wantErr: true,
+		},
+		{
 			name: "pool with empty address",
 			config: &pool.PoolConfig{
 				Enabled: true,

@@ -3,6 +3,7 @@ package pool_test
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -147,29 +148,56 @@ func TestClient_ReadsMayUseStandbys(t *testing.T) {
 	}
 }
 
-// TestClient_ReadOnlyFailover verifies an "ERR readonly" reply to a write marks the server stale and reroutes to
-// another master.
+// TestClient_ReadOnlyFailover verifies an "ERR readonly" reply to a write is treated as a failure and retried rather
+// than returned to the caller as success. With one master allowed per pool, the retries can only revisit the same
+// demoted server, so Send exhausts its attempts and reports the read-only error.
 func TestClient_ReadOnlyFailover(t *testing.T) {
 	t.Parallel()
-	var goodHits atomic.Int32
+	var hits atomic.Int32
 	readOnlyAddr := startHandler(t, func(_ context.Context, _ string, _ []string) protocol.Reply {
+		hits.Add(1)
 		return protocol.Error("readonly")
 	})
-	goodAddr := startHandler(t, okHandler(&goodHits))
 
 	client := newPool(t, []pool.ServerConfig{
 		{Address: readOnlyAddr, Role: pool.RoleMaster},
-		{Address: goodAddr, Role: pool.RoleMaster},
 	}, pool.StrategyMasterFirst)
 
-	resp, err := client.Send("SET", []string{"t", "k", "v"})
-	if err != nil {
-		t.Fatalf("Send SET: %v", err)
+	_, err := client.Send("SET", []string{"t", "k", "v"})
+	if err == nil {
+		t.Fatal("Send SET against a read-only master succeeded, want error")
 	}
-	if resp.Kind != protocol.ReplySimpleString || resp.Value != "OK" {
-		t.Fatalf("reply = %+v, want +OK", resp)
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("error = %v, want it to name the read-only server", err)
 	}
-	if goodHits.Load() == 0 {
-		t.Error("write never reached the writable master after readonly failover")
+	if hits.Load() != 4 {
+		t.Errorf("read-only master hit %d times, want 4 (initial attempt + 3 retries)", hits.Load())
+	}
+}
+
+// TestClient_RejectsAdminCommands verifies control-plane commands never leave the client: they target one specific
+// node, and the pool cannot promise which server a routed command reaches.
+func TestClient_RejectsAdminCommands(t *testing.T) {
+	t.Parallel()
+	var hits atomic.Int32
+	masterAddr := startHandler(t, okHandler(&hits))
+
+	client := newPool(t, []pool.ServerConfig{
+		{Address: masterAddr, Role: pool.RoleMaster},
+	}, pool.StrategyMasterFirst)
+
+	for _, tc := range []struct {
+		cmd  string
+		args []string
+	}{
+		{cmd: "PROMOTE"},
+		{cmd: "REPLICATION", args: []string{"STATUS"}},
+	} {
+		if _, err := client.Send(tc.cmd, tc.args); err == nil {
+			t.Errorf("Send %s through the pool succeeded, want error", tc.cmd)
+		}
+	}
+	if hits.Load() != 0 {
+		t.Errorf("server received %d admin commands, want 0", hits.Load())
 	}
 }

@@ -43,8 +43,8 @@ type Client struct {
 }
 
 // New creates a new Client configured by the given options. With WithServers, connections are pooled across the given
-// servers with automatic failover; otherwise a single connection is established to the address set by WithAddress
-// (default 127.0.0.1:3223)
+// servers, with reads retried on another server on failure; otherwise a single connection is established to the
+// address set by WithAddress (default 127.0.0.1:3223)
 func New(opts ...Option) (*Client, error) {
 	o := defaultOptions()
 	for _, opt := range opts {
