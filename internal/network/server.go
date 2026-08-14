@@ -155,7 +155,9 @@ func (s *TCPServer) handleConnection(ctx context.Context, conn net.Conn, handler
 			return
 		}
 
-		// process request
+		// Process the request. Dispatch happens only after ReadCommand has decoded the frame whole, so a truncated request
+		// returns above without ever reaching the handler. Clients rely on that to tell a failed send apart from a lost
+		// reply: a command they could not finish writing provably did not run.
 		response := handler(ctx, cmd, args)
 		if err = s.writeReply(conn, response); err != nil {
 			s.logger.Error("Failed to send response", "error", err)

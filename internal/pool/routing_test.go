@@ -109,7 +109,7 @@ func TestClient_WritesSkipStandbys(t *testing.T) {
 			}, pool.StrategyRoundRobin)
 
 			for range 5 {
-				if _, err := client.Send(mutation.cmd, mutation.args); err != nil {
+				if _, err := client.Send(t.Context(), mutation.cmd, mutation.args); err != nil {
 					t.Fatalf("Send %s: %v", mutation.cmd, err)
 				}
 			}
@@ -138,7 +138,7 @@ func TestClient_ReadsMayUseStandbys(t *testing.T) {
 
 	for _, cmd := range []string{"GET", "TYPE", "HGET", "KEYS", "EXISTS", "TABLES"} {
 		for range 4 {
-			if _, err := client.Send(cmd, []string{"t", "k", "f"}); err != nil {
+			if _, err := client.Send(t.Context(), cmd, []string{"t", "k", "f"}); err != nil {
 				t.Fatalf("Send %s: %v", cmd, err)
 			}
 		}
@@ -163,7 +163,7 @@ func TestClient_ReadOnlyFailover(t *testing.T) {
 		{Address: readOnlyAddr, Role: pool.RoleMaster},
 	}, pool.StrategyMasterFirst)
 
-	_, err := client.Send("SET", []string{"t", "k", "v"})
+	_, err := client.Send(t.Context(), "SET", []string{"t", "k", "v"})
 	if err == nil {
 		t.Fatal("Send SET against a read-only master succeeded, want error")
 	}
@@ -187,7 +187,7 @@ func TestClient_RejectsAdminCommands(t *testing.T) {
 	}, pool.StrategyMasterFirst)
 
 	for _, cmd := range []string{"PROMOTE", "REPLICATION"} {
-		if _, err := client.Send(cmd, nil); err == nil {
+		if _, err := client.Send(t.Context(), cmd, nil); err == nil {
 			t.Errorf("Send %s through the pool succeeded, want error", cmd)
 		}
 	}

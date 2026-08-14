@@ -62,6 +62,18 @@ func IsAdmin(cmd string) bool {
 	return ok && spec.admin
 }
 
+// IsMutation reports whether cmd changes server state, which decides whether the transport may re-send it after a
+// failure. It deliberately disagrees with IsWrite on two groups, so the two must not be merged:
+//
+//   - control-plane commands: PROMOTE is not a "write" for routing (it targets one named node rather than whichever
+//     server holds the master role) but it does mutate, so re-sending it is unsafe.
+//   - unknown commands: routing can ignore them because the server rejects them anyway, whereas retry safety has to
+//     assume the worst.
+func IsMutation(cmd string) bool {
+	spec, ok := commands[strings.ToUpper(strings.TrimSpace(cmd))]
+	return !ok || !spec.readOnly
+}
+
 // New creates a new Parser instance.
 func New() *Parser {
 	return &Parser{}

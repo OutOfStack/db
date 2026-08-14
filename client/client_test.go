@@ -3,6 +3,8 @@ package client_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
@@ -24,7 +26,7 @@ type fakeTransport struct {
 	closed bool
 }
 
-func (f *fakeTransport) Send(cmd string, args []string) (protocol.Reply, error) {
+func (f *fakeTransport) Send(_ context.Context, cmd string, args []string) (protocol.Reply, error) {
 	f.sent = append(f.sent, sentCommand{cmd: cmd, args: append([]string(nil), args...)})
 	if f.err != nil {
 		return protocol.Reply{}, f.err
@@ -331,6 +333,21 @@ func TestClient_ContextCanceled(t *testing.T) {
 	}
 	if len(ft.sent) != 0 {
 		t.Errorf("canceled context must not reach the transport, sent: %#v", ft.sent)
+	}
+}
+
+// TestClient_OutcomeUnknownReachesCaller pins the error chain from the transport to the caller. Callers detect this
+// with errors.Is, so anything that wraps the error in a way that hides the sentinel — or a second sentinel value in the
+// client package — breaks the one signal that tells them a mutation may have been applied.
+func TestClient_OutcomeUnknownReachesCaller(t *testing.T) {
+	t.Parallel()
+
+	ft := &fakeTransport{err: fmt.Errorf("%w: %w", client.ErrOutcomeUnknown, io.EOF)}
+	c := client.NewWithTransport(ft)
+
+	_, err := c.Incr(t.Context(), "stats", "hits", "")
+	if !errors.Is(err, client.ErrOutcomeUnknown) {
+		t.Fatalf("Incr() error = %v, want ErrOutcomeUnknown", err)
 	}
 }
 
