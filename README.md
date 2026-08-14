@@ -480,8 +480,22 @@ c, err := client.New(
 
 Error handling:
 - `client.ErrNotFound` — sentinel returned by `Get`/`Del` for missing keys (check with `errors.Is`)
+- `client.ErrOutcomeUnknown` — the command reached a server but no reply came back, so whether it was applied cannot be
+  determined (check with `errors.Is`)
 - `*client.ServerError` — any other error message returned by the server (check with `errors.As`)
 - `Raw(ctx, command)` — escape hatch that sends a raw command line and returns the response text as is
+
+Delivery semantics: a command that fails is never re-sent once a complete frame may have reached a server, because
+repeating `Incr`, `Append` or `HSet` would apply it twice. A command the client could not finish writing is retried — the
+server acts on whole frames only, so a truncated one provably did not run. Reads are retried transparently; a mutation
+that fails after its frame went out returns
+`ErrOutcomeUnknown` instead, and it is the caller's decision whether to re-issue it (safe for an idempotent `Set`) or to
+check the current value first. Cancelling a context interrupts a command in flight, and a cancelled mutation can still
+have been applied, so that error matches both `ErrOutcomeUnknown` and `context.Canceled`.
+
+`New` validates configuration but does not connect: the first command opens the connection under its own context, so an
+unreachable server surfaces there rather than at construction. The client is safe for concurrent use, and `Close` is
+idempotent and final — it interrupts commands in flight and later calls fail rather than reconnecting.
 
 ## Building
 

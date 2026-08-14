@@ -33,18 +33,28 @@ const (
 
 // transport is the minimal connection interface the client needs. Satisfied by *network.TCPClient and *pool.Client
 type transport interface {
-	Send(cmd string, args []string) (protocol.Reply, error)
+	Send(ctx context.Context, cmd string, args []string) (protocol.Reply, error)
 	Close() error
 }
 
-// Client is a client for the database server
+// Client is a client for the database server.
+//
+// It is safe for concurrent use by multiple goroutines; each connection carries one command at a time. Every method
+// takes a context that bounds the whole call, including connecting, and cancelling it interrupts a command already in
+// flight.
+//
+// A command that fails after reaching the server returns ErrOutcomeUnknown, which the caller has to handle for
+// mutations: the client never repeats a command that may already have been applied.
 type Client struct {
 	transport transport
 }
 
 // New creates a new Client configured by the given options. With WithServers, connections are pooled across the given
-// servers, with reads retried on another server on failure; otherwise a single connection is established to the
-// address set by WithAddress (default 127.0.0.1:3223)
+// servers, with reads retried on another server on failure; otherwise commands go to the address set by WithAddress
+// (default 127.0.0.1:3223).
+//
+// No connection is made here — the first command connects, under its own context — so New reports configuration errors
+// only, never an unreachable server.
 func New(opts ...Option) (*Client, error) {
 	o := defaultOptions()
 	for _, opt := range opts {
@@ -75,11 +85,7 @@ func New(opts ...Option) (*Client, error) {
 	if o.address == "" {
 		return nil, errors.New("address cannot be empty")
 	}
-	tcpClient, err := network.NewTCPClient(o.address, netOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", o.address, err)
-	}
-	return &Client{transport: tcpClient}, nil
+	return &Client{transport: network.NewTCPClient(o.address, netOpts...)}, nil
 }
 
 // Set stores value under key in table
@@ -303,23 +309,22 @@ func (c *Client) Raw(ctx context.Context, command string) (string, error) {
 	return replyText(resp), nil
 }
 
-// Close closes the client connection(s)
+// Close closes the client's connections and retires it: later calls fail rather than reconnecting. It is safe to call
+// more than once, and safe to call while other goroutines have commands in flight, which it interrupts.
 func (c *Client) Close() error {
 	return c.transport.Close()
 }
 
 // send sends a command to the server and returns a typed response.
 func (c *Client) send(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
-	// the current transport cannot honor cancellation mid-call, so check the context before sending
+	// nothing to connect or send for a context that is already done
 	if err := ctx.Err(); err != nil {
 		return protocol.Reply{}, err
 	}
 
-	resp, err := c.transport.Send(cmd, args)
-	if err != nil {
-		return protocol.Reply{}, fmt.Errorf("failed to send command: %w", err)
-	}
-	return resp, nil
+	// the error is returned unwrapped: callers match ErrOutcomeUnknown against it, and "failed to send" would misdescribe
+	// a command that was sent
+	return c.transport.Send(ctx, cmd, args)
 }
 
 func replyText(reply protocol.Reply) string {

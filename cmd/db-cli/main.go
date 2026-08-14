@@ -35,9 +35,10 @@ func main() {
 		cfg.Network.IdleTimeout = timeout
 	}
 
+	// the client connects on first use, so an unreachable server surfaces on the first command rather than here
 	dbClient, err := client.New(clientOptions(cfg)...)
 	if err != nil {
-		fmt.Printf("Failed to connect to database server: %v\n", err)
+		fmt.Printf("Invalid client configuration: %v\n", err)
 		os.Exit(1)
 	}
 	defer func() {
@@ -47,9 +48,9 @@ func main() {
 	}()
 
 	if cfg.Pool.Enabled {
-		fmt.Printf("Connected to database pool (%d servers)\n", len(cfg.Pool.Servers))
+		fmt.Printf("Using database pool (%d servers)\n", len(cfg.Pool.Servers))
 	} else {
-		fmt.Printf("Connected to database server at %s\n", cfg.Network.Address)
+		fmt.Printf("Using database server at %s\n", cfg.Network.Address)
 	}
 	fmt.Println("Available commands:")
 	fmt.Println("  SET table key value")

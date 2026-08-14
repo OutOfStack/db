@@ -1,8 +1,10 @@
 package pool
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"sync"
 	"time"
@@ -16,33 +18,16 @@ import (
 // "ERR " prefix stripped). It signals that the selected server is not actually a writable master.
 const readOnlyReply = "readonly"
 
-// syncedConnection wraps a TCPClient with a mutex to serialize Send() calls
-type syncedConnection struct {
-	mu     sync.Mutex
-	client *network.TCPClient
-}
-
-// Send serializes Send() calls to prevent concurrent access corruption
-func (sc *syncedConnection) Send(cmd string, args []string) (protocol.Reply, error) {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.client.Send(cmd, args)
-}
-
-// Close closes the underlying connection
-func (sc *syncedConnection) Close() error {
-	sc.mu.Lock()
-	defer sc.mu.Unlock()
-	return sc.client.Close()
-}
-
 // Client represents a pooled client that can connect to multiple servers
 type Client struct {
 	mu          sync.RWMutex
 	config      *PoolConfig
 	selector    ServerSelector
-	connections map[string]*syncedConnection
+	connections map[string]*network.TCPClient
 	options     []network.TCPClientOption
+	closed      bool
+	// done is closed by Close, so a call parked in a retry delay stops waiting instead of sleeping it out
+	done chan struct{}
 }
 
 // NewClient creates a new pooled client
@@ -54,8 +39,9 @@ func NewClient(config *PoolConfig, options ...network.TCPClientOption) (*Client,
 	return &Client{
 		config:      config,
 		selector:    NewSelector(config),
-		connections: make(map[string]*syncedConnection),
+		connections: make(map[string]*network.TCPClient),
 		options:     options,
+		done:        make(chan struct{}),
 	}, nil
 }
 
@@ -63,43 +49,48 @@ func NewClient(config *PoolConfig, options ...network.TCPClientOption) (*Client,
 // retry on another server after a failure. A server that replies "ERR readonly" to a write marks the routing stale, so
 // the pool treats it as failed and retries. Admin commands are refused client-side: they target one specific node, and
 // the pool cannot promise which server a routed command reaches.
-func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
+//
+// Whether a failure may be retried is decided by the transport, not here: an error carrying network.ErrOutcomeUnknown
+// means the command may already have run, so it is never sent to another server. Every other failure provably did not
+// execute, which is what makes trying the next server safe.
+func (c *Client) Send(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
 	if parser.IsAdmin(cmd) {
 		return protocol.Reply{}, fmt.Errorf("admin command %s cannot be sent through a pool; connect to the target server directly", cmd)
 	}
 	write := parser.IsWrite(cmd)
 	var lastErr error
-	attempts := 0
 	maxAttempts := c.config.MaxRetries + 1 // initial attempt + retries
 
-	for attempts < maxAttempts {
+	for attempt := range maxAttempts {
+		if attempt > 0 {
+			if err := c.wait(ctx, c.config.RetryDelay); err != nil {
+				return protocol.Reply{}, err
+			}
+		}
+
 		server := c.selectServer(write)
 		if server == nil {
 			return protocol.Reply{}, noServersError(write)
 		}
 
-		// Get or create connection
 		conn, err := c.getConnection(server.Address)
 		if err != nil {
-			c.selector.MarkFailed(server.Address)
-			lastErr = err
-			attempts++
-			if attempts < maxAttempts {
-				time.Sleep(c.config.RetryDelay)
-			}
-			continue
+			return protocol.Reply{}, err
 		}
 
-		// Try to send
-		resp, err := conn.Send(cmd, args)
+		resp, err := conn.Send(ctx, cmd, args)
 		if err != nil {
-			// Connection failed, mark server as failed and retry
+			// A call the caller abandoned says nothing about the server: it may have given up while queued for the
+			// connection, before a single byte reached the network. Marking the server failed would route later reads away
+			// from a healthy node for the whole failure timeout, on the strength of one impatient caller.
+			if ctx.Err() != nil {
+				return protocol.Reply{}, fmt.Errorf("failed to send to %s: %w", server.Address, err)
+			}
 			c.selector.MarkFailed(server.Address)
-			c.removeConnection(server.Address)
 			lastErr = fmt.Errorf("failed to send to %s: %w", server.Address, err)
-			attempts++
-			if attempts < maxAttempts {
-				time.Sleep(c.config.RetryDelay)
+			if errors.Is(err, network.ErrOutcomeUnknown) {
+				// the command may already have taken effect on this server; running it anywhere else risks applying it twice
+				return protocol.Reply{}, lastErr
 			}
 			continue
 		}
@@ -110,21 +101,31 @@ func (c *Client) Send(cmd string, args []string) (protocol.Reply, error) {
 		if write && isReadOnlyReply(resp) {
 			c.selector.MarkFailed(server.Address)
 			lastErr = fmt.Errorf("server %s is read-only", server.Address)
-			attempts++
-			if attempts < maxAttempts {
-				time.Sleep(c.config.RetryDelay)
-			}
 			continue
 		}
 
-		// Success!
 		return resp, nil
 	}
 
-	if lastErr != nil {
-		return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts: %w", attempts, lastErr)
+	// falling out of the loop means every attempt failed: MaxRetries is validated non-negative, so it always ran at least
+	// once, and every path that continues records why
+	return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts: %w", maxAttempts, lastErr)
+}
+
+// wait pauses between attempts, giving up as soon as the caller cancels or the pool is closed. Closing has to reach it:
+// a retry delay is configurable and can be far longer than a caller expects a closed pool to keep working.
+func (c *Client) wait(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.done:
+		return net.ErrClosed
+	case <-timer.C:
+		return nil
 	}
-	return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts", attempts)
 }
 
 // selectServer picks a server for the command, resetting the selector once if all candidates are currently marked
@@ -157,8 +158,14 @@ func isReadOnlyReply(resp protocol.Reply) bool {
 	return resp.Kind == protocol.ReplyError && strings.EqualFold(resp.Value, readOnlyReply)
 }
 
-// getConnection gets or creates a connection to the specified address
-func (c *Client) getConnection(address string) (*syncedConnection, error) {
+// getConnection returns the client for address, creating it on first use. TCPClient connects lazily and serializes its
+// own commands, so this neither performs I/O nor needs a wrapper of its own.
+//
+// Connections are never evicted on failure. A TCPClient drops its socket on any I/O error and redials on the next
+// command, so the entry is self-healing, and evicting it would close a connection that other goroutines may be sending
+// on — turning one server's hiccup into an unknown outcome for every command in flight against it. Keeping the server
+// out of rotation is MarkFailed's job.
+func (c *Client) getConnection(address string) (*network.TCPClient, error) {
 	c.mu.RLock()
 	conn, exists := c.connections[address]
 	c.mu.RUnlock()
@@ -167,48 +174,33 @@ func (c *Client) getConnection(address string) (*syncedConnection, error) {
 		return conn, nil
 	}
 
-	// Create new connection
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.closed {
+		return nil, net.ErrClosed
+	}
+
 	// Double-check after acquiring write lock
-	if conn, exists := c.connections[address]; exists {
+	if conn, exists = c.connections[address]; exists {
 		return conn, nil
 	}
 
-	// Create new TCP client
-	tcpClient, err := network.NewTCPClient(address, c.options...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create connection to %s: %w", address, err)
-	}
-
-	// Wrap with synchronized connection
-	syncedConn := &syncedConnection{
-		client: tcpClient,
-	}
-
-	c.connections[address] = syncedConn
-	return syncedConn, nil
+	conn = network.NewTCPClient(address, c.options...)
+	c.connections[address] = conn
+	return conn, nil
 }
 
-// removeConnection removes a connection from the pool
-func (c *Client) removeConnection(address string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if conn, exists := c.connections[address]; exists {
-		if err := conn.Close(); err != nil {
-			// Log the error but continue with cleanup
-			_ = err
-		}
-		delete(c.connections, address)
-	}
-}
-
-// Close closes all connections in the pool
+// Close closes all connections and retires the pool: later commands fail with net.ErrClosed rather than reconnecting.
+// It is safe to call more than once.
 func (c *Client) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if !c.closed {
+		c.closed = true
+		close(c.done)
+	}
 
 	var lastErr error
 	for address, conn := range c.connections {
@@ -217,7 +209,7 @@ func (c *Client) Close() error {
 		}
 	}
 
-	c.connections = make(map[string]*syncedConnection)
+	c.connections = make(map[string]*network.TCPClient)
 	return lastErr
 }
 
@@ -226,7 +218,8 @@ func (c *Client) Reset() {
 	c.selector.Reset()
 }
 
-// GetActiveServers returns the addresses of servers with active connections
+// GetActiveServers returns the addresses the pool has sent to. Connections are lazy and self-healing, so an address
+// here has been used at some point, not necessarily an open socket right now.
 func (c *Client) GetActiveServers() []string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

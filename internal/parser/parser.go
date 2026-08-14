@@ -51,15 +51,35 @@ var commands = map[string]commandSpec{ //nolint:gochecknoglobals // a single reg
 // An unknown command is not a write — the server rejects it either way. Neither are the control-plane commands: PROMOTE
 // mutates, but it is aimed at one specific node, not at whichever server currently holds the master role.
 func IsWrite(cmd string) bool {
-	spec, ok := commands[strings.ToUpper(strings.TrimSpace(cmd))]
+	spec, ok := lookup(cmd)
 	return ok && !spec.readOnly && !spec.admin
 }
 
 // IsAdmin reports whether cmd is a control-plane command aimed at one specific node (e.g. PROMOTE). The pool refuses
 // to route these: it cannot promise which server a pooled command reaches.
 func IsAdmin(cmd string) bool {
-	spec, ok := commands[strings.ToUpper(strings.TrimSpace(cmd))]
+	spec, ok := lookup(cmd)
 	return ok && spec.admin
+}
+
+// IsMutation reports whether cmd changes server state, which decides whether the transport may re-send it after a
+// failure. It deliberately disagrees with IsWrite on two groups, so the two must not be merged:
+//
+//   - control-plane commands: PROMOTE is not a "write" for routing (it targets one named node rather than whichever
+//     server holds the master role) but it does mutate, so re-sending it is unsafe.
+//   - unknown commands: routing can ignore them because the server rejects them anyway, whereas retry safety has to
+//     assume the worst.
+func IsMutation(cmd string) bool {
+	spec, ok := lookup(cmd)
+	return !ok || !spec.readOnly
+}
+
+// lookup normalizes a command name and finds its registry entry. The three classifiers above have to normalize
+// identically: a name that one of them recognizes and another does not is exactly how routing and retry safety end up
+// disagreeing about the same command.
+func lookup(cmd string) (commandSpec, bool) {
+	spec, ok := commands[strings.ToUpper(strings.TrimSpace(cmd))]
+	return spec, ok
 }
 
 // New creates a new Parser instance.

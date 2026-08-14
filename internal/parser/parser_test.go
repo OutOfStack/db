@@ -120,3 +120,34 @@ func TestIsAdmin(t *testing.T) {
 		t.Error(`IsAdmin("  promote  ") = false, want true`)
 	}
 }
+
+// TestIsMutation pins the classification the transport decides retries on, and the two places it deliberately disagrees
+// with IsWrite: PROMOTE changes state even though it is not routed to a master, and an unrecognized command is assumed
+// to change state because re-sending one that did would be unrecoverable.
+func TestIsMutation(t *testing.T) {
+	tests := map[string]bool{
+		"SET":         true,
+		"DEL":         true,
+		"INCR":        true,
+		"APPEND":      true,
+		"HSET":        true,
+		"PROMOTE":     true,
+		"NONSENSE":    true,
+		"GET":         false,
+		"HGET":        false,
+		"TYPE":        false,
+		"TABLES":      false,
+		"EXISTS":      false,
+		"KEYS":        false,
+		"REPLICATION": false,
+	}
+	for cmd, want := range tests {
+		if got := parser.IsMutation(cmd); got != want {
+			t.Errorf("IsMutation(%q) = %v, want %v", cmd, got, want)
+		}
+	}
+
+	if !parser.IsMutation("  incr  ") {
+		t.Error(`IsMutation("  incr  ") = false, want true`)
+	}
+}

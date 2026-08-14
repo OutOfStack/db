@@ -6,36 +6,59 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net"
+	"sync"
 	"time"
 
+	"github.com/OutOfStack/db/internal/parser"
 	"github.com/OutOfStack/db/internal/protocol"
 )
 
-// TCPClient represents a TCP client connection
-type TCPClient struct {
-	conn    net.Conn
-	reader  *bufio.Reader
-	address string
+// ErrOutcomeUnknown reports that a command reached the server in full but no reply could be read, so whether it took
+// effect is unknowable from the client side. Re-issuing a read or an idempotent SET is harmless; INCR, APPEND and HSET
+// have to be checked against the server before being repeated.
+var ErrOutcomeUnknown = errors.New("command outcome unknown: sent without a reply")
 
+// TCPClient is a client connection to a single server.
+//
+// It is safe for concurrent use. Commands are serialized, so one connection carries one in-flight command at a time.
+//
+// Send reports delivery in three ways, and callers that mutate state have to distinguish them:
+//
+//   - nil error: the command executed and the reply is valid.
+//   - ErrOutcomeUnknown: the command was sent, but its outcome cannot be determined.
+//   - any other error: the command did not execute, or it was read-only and re-issuing it is harmless.
+type TCPClient struct {
+	// sendGate serializes commands, holding one token for the command in flight. The protocol is strictly
+	// request/response: concurrent writers would interleave frames, and concurrent readers would steal each other's
+	// replies. It is a channel rather than a mutex so that waiting for a turn stays cancellable — a caller's deadline has
+	// to cover queueing too, not just its own I/O.
+	sendGate chan struct{}
+
+	// closeCh is closed by Close. It releases callers queued on sendGate, who would otherwise wait for a command that
+	// Close has already interrupted.
+	closeCh chan struct{}
+
+	// mu guards the connection state. Close takes only this lock, never sendGate, so it can drop the socket and thereby
+	// unblock a command parked in a read.
+	mu     sync.Mutex
+	conn   net.Conn
+	reader *bufio.Reader
+	closed bool
+	// dialCancel aborts a dial in progress. Only the command holding sendGate can dial, so one is enough.
+	dialCancel context.CancelFunc
+
+	address        string
 	idleTimeout    time.Duration
 	maxMessageSize int
 }
 
-// NewTCPClient creates a new TCP client connection
-func NewTCPClient(address string, options ...TCPClientOption) (*TCPClient, error) {
-	dialer := &net.Dialer{
-		Timeout: 10 * time.Second,
-	}
-	conn, err := dialer.DialContext(context.Background(), "tcp", address)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to %s: %w", address, err)
-	}
-
+// NewTCPClient creates a client for address. It does not connect: the socket is opened by the first command, under that
+// command's context and deadline, and reopened after any failure.
+func NewTCPClient(address string, options ...TCPClientOption) *TCPClient {
 	client := &TCPClient{
-		conn:           conn,
-		reader:         bufio.NewReader(conn),
+		sendGate:       make(chan struct{}, 1),
+		closeCh:        make(chan struct{}),
 		address:        address,
 		maxMessageSize: defaultMaxMessageSize,
 		idleTimeout:    defaultTimeout,
@@ -45,88 +68,242 @@ func NewTCPClient(address string, options ...TCPClientOption) (*TCPClient, error
 		option(client)
 	}
 
-	return client, nil
+	return client
 }
 
-// Send sends a command to the server with automatic reconnection on connection failures
-func (tc *TCPClient) Send(cmd string, args []string) (protocol.Reply, error) {
-	return tc.sendWithRetry(cmd, args, true)
+// Send sends a command and returns the server's reply. See TCPClient for how failures are reported.
+func (tc *TCPClient) Send(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
+	if err := tc.enter(ctx); err != nil {
+		return protocol.Reply{}, err
+	}
+	defer func() { <-tc.sendGate }()
+
+	// one budget covers dial, write and read; WithDeadline keeps whichever of the caller's deadline and the idle timeout
+	// falls first. It starts here rather than at entry so that time spent queueing is not also charged to the idle
+	// timeout, while the caller's own deadline still bounds the whole call.
+	sendCtx, cancel := context.WithDeadline(ctx, time.Now().Add(tc.idleTimeout))
+	defer cancel()
+
+	mutation := parser.IsMutation(cmd)
+
+	resp, retry, err := tc.attempt(ctx, sendCtx, cmd, args, mutation)
+	if err != nil && retry {
+		resp, _, err = tc.attempt(ctx, sendCtx, cmd, args, mutation)
+	}
+	return resp, err
 }
 
-// sendWithRetry attempts to send data with optional retry on connection failure
-func (tc *TCPClient) sendWithRetry(cmd string, args []string, allowRetry bool) (protocol.Reply, error) {
-	// set write deadline
-	if err := tc.conn.SetWriteDeadline(time.Now().Add(tc.idleTimeout)); err != nil {
-		return protocol.Reply{}, fmt.Errorf("failed to set write deadline: %w", err)
+// enter waits for this command's turn on the connection. Queueing behind another command is part of the call, so it
+// ends when the caller's context does — otherwise a request with a 10ms deadline could sit behind one still inside its
+// minute-long idle timeout.
+func (tc *TCPClient) enter(ctx context.Context) error {
+	select {
+	case tc.sendGate <- struct{}{}:
+		return nil
+	case <-tc.closeCh:
+		return net.ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
 	}
+}
 
-	// send request
-	if err := protocol.WriteCommand(tc.conn, cmd, args); err != nil {
-		if allowRetry && tc.isConnectionError(err) {
-			if rErr := tc.reconnect(); rErr != nil {
-				return protocol.Reply{}, fmt.Errorf("failed to reconnect: %w", rErr)
-			}
-			return tc.sendWithRetry(cmd, args, false)
-		}
-		return protocol.Reply{}, fmt.Errorf("failed to send data: %w", err)
-	}
-
-	// set read deadline
-	if err := tc.conn.SetReadDeadline(time.Now().Add(tc.idleTimeout)); err != nil {
-		return protocol.Reply{}, fmt.Errorf("failed to set read deadline: %w", err)
-	}
-
-	// read response
-	resp, err := protocol.ReadReply(tc.reader, tc.maxMessageSize)
+// attempt runs one round trip. It reports whether re-sending the command on a fresh connection is safe, which is only
+// ever true when the command provably did not execute.
+func (tc *TCPClient) attempt(ctx, sendCtx context.Context, cmd string, args []string, mutation bool) (protocol.Reply, bool, error) {
+	conn, reader, err := tc.acquire(sendCtx)
 	if err != nil {
-		return tc.handleReadError(cmd, args, err, allowRetry)
+		// nothing was written, so the command did not execute; a retired client is the one case not worth another try
+		return protocol.Reply{}, !errors.Is(err, net.ErrClosed), err
 	}
 
-	return resp, nil
-}
-
-// handleReadError recovers from a failed reply read: connection errors are retried once on a fresh connection; decode
-// errors drop the connection because unread reply bytes may remain on the wire and would otherwise be read as the next
-// command's reply
-func (tc *TCPClient) handleReadError(cmd string, args []string, err error, allowRetry bool) (protocol.Reply, error) {
-	if !tc.isConnectionError(err) {
-		// reconnect eagerly; if that fails the connection is still closed and the next Send re-dials via its own retry path
-		_ = tc.reconnect()
-		return protocol.Reply{}, fmt.Errorf("failed to read response: %w", err)
+	deadline, _ := sendCtx.Deadline()
+	if err = conn.SetDeadline(deadline); err != nil {
+		tc.drop(conn)
+		return protocol.Reply{}, true, fmt.Errorf("failed to set deadline: %w", err)
 	}
-	if allowRetry {
-		if rErr := tc.reconnect(); rErr != nil {
-			return protocol.Reply{}, fmt.Errorf("failed to reconnect: %w", rErr)
+
+	// A deadline is the only lever a net.Conn offers for interrupting a blocked read, so cancellation expires it. This is
+	// armed after SetDeadline above, which would otherwise overwrite an expiry that arrived first.
+	stop := context.AfterFunc(ctx, func() { _ = conn.SetDeadline(time.Now()) })
+	defer func() {
+		// stop reports that the callback was descheduled, not that it finished. A callback still in flight would expire
+		// the deadline of whichever command picks this connection up next, so retire the connection instead.
+		if !stop() {
+			tc.drop(conn)
 		}
-		return tc.sendWithRetry(cmd, args, false)
+	}()
+
+	frame := &frameWriter{w: conn}
+	if err = protocol.WriteCommand(frame, cmd, args); err != nil {
+		tc.drop(conn)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return protocol.Reply{}, false, ctxErr
+		}
+		if mutation && !frame.short {
+			// Every byte reached the socket even though the write reported an error, so the server may well have run the
+			// command. That is the same position a lost reply leaves us in, and it is reported the same way.
+			return protocol.Reply{}, false, fmt.Errorf("%w: %w", ErrOutcomeUnknown, err)
+		}
+		// Part of the frame never left this machine, and the server dispatches a command only once it has decoded the frame
+		// whole (see handleConnection), so the command cannot have executed. Dropping the connection above is what makes
+		// that hold: it guarantees the orphaned prefix can never be completed. A read-only command is retried either way.
+		return protocol.Reply{}, true, fmt.Errorf("failed to send data: %w", err)
 	}
-	return protocol.Reply{}, fmt.Errorf("failed to read response: %w", err)
+
+	resp, err := protocol.ReadReply(reader, tc.maxMessageSize)
+	if err == nil {
+		return resp, false, nil
+	}
+
+	// The request is on the wire and the reply is not. The connection cannot be reused either way: unread reply bytes
+	// would be mistaken for the next command's reply.
+	tc.drop(conn)
+
+	if mutation {
+		cause := err
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			cause = ctxErr
+		}
+		return protocol.Reply{}, false, fmt.Errorf("%w: %w", ErrOutcomeUnknown, cause)
+	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return protocol.Reply{}, false, ctxErr
+	}
+	// A read-only command has no side effects, so a broken connection is worth one more try. A decode error is not: the
+	// server answered, and asking again would only produce the same undecodable reply.
+	return protocol.Reply{}, isConnectionError(err), fmt.Errorf("failed to read response: %w", err)
 }
 
-// isConnectionError checks if the error indicates a broken connection
-func (tc *TCPClient) isConnectionError(err error) bool {
+// acquire returns a connection to send on, dialing when the client holds none and when the one it holds is no longer
+// healthy.
+func (tc *TCPClient) acquire(ctx context.Context) (net.Conn, *bufio.Reader, error) {
+	tc.mu.Lock()
+	closed, conn, reader := tc.closed, tc.conn, tc.reader
+	tc.mu.Unlock()
+
+	if closed {
+		return nil, nil, net.ErrClosed
+	}
+	if conn != nil {
+		if alive(conn, reader) {
+			return conn, reader, nil
+		}
+		tc.drop(conn)
+	}
+	return tc.dial(ctx)
+}
+
+// dial opens a connection and installs it as the current one. It dials outside tc.mu so that Close never waits behind a
+// connection attempt to an unresponsive host, and publishes its cancel func so that Close can abort one: an
+// unreachable address would otherwise keep the dial alive for the whole deadline after Close returned.
+func (tc *TCPClient) dial(ctx context.Context) (net.Conn, *bufio.Reader, error) {
+	dialCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	tc.mu.Lock()
+	if tc.closed {
+		tc.mu.Unlock()
+		return nil, nil, net.ErrClosed
+	}
+	tc.dialCancel = cancel
+	tc.mu.Unlock()
+
+	var dialer net.Dialer
+	conn, err := dialer.DialContext(dialCtx, "tcp", tc.address)
+
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
+	tc.dialCancel = nil
+
+	if err != nil {
+		if tc.closed {
+			return nil, nil, net.ErrClosed
+		}
+		return nil, nil, fmt.Errorf("failed to connect to %s: %w", tc.address, err)
+	}
+	if tc.closed {
+		// Close ran while this connection was being established
+		_ = conn.Close()
+		return nil, nil, net.ErrClosed
+	}
+
+	tc.conn, tc.reader = conn, bufio.NewReader(conn)
+	return tc.conn, tc.reader, nil
+}
+
+// frameWriter forwards the command frame to the socket and records whether the socket ever refused part of a write.
+// Retry safety rests on a failed write having left the frame incomplete, and io.Writer permits a writer to return
+// len(p) alongside an error — net.Conn does not do that today, but the guarantee belongs in this package rather than in
+// an assumption about the socket implementation.
+//
+// A short write proves the frame was cut off. Every byte being accepted does not prove the opposite, since the write
+// may have failed before the last piece was offered at all; that case is reported as an unknown outcome, which is the
+// safe direction for a mutation.
+type frameWriter struct {
+	w     io.Writer
+	short bool
+}
+
+func (fw *frameWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if n < len(p) {
+		fw.short = true
+	}
+	return n, err
+}
+
+// alive reports whether a connection left over from an earlier command is still usable. The protocol is strictly
+// request/response, so an idle connection has nothing to read: a timeout means healthy, readable bytes mean the stream
+// is out of step, and anything else means the peer is gone.
+//
+// This check is what keeps a server's own idle close from looking like a lost reply. It moves that failure back before
+// the send, where re-sending a mutation is safe. A peer that disappears after this point is the genuine ambiguity that
+// ErrOutcomeUnknown exists to report.
+func alive(conn net.Conn, reader *bufio.Reader) bool {
+	if reader.Buffered() > 0 {
+		return false
+	}
+	if err := conn.SetReadDeadline(time.Now()); err != nil {
+		return false
+	}
+
+	// Peek leaves the stream untouched, and bufio clears the deadline error it stores, so the next real read is unaffected
+	_, err := reader.Peek(1)
+	netErr, ok := errors.AsType[net.Error](err)
+	return ok && netErr.Timeout()
+}
+
+// drop retires conn, unless a later command has already replaced it.
+func (tc *TCPClient) drop(conn net.Conn) {
+	tc.mu.Lock()
+	owned := tc.conn == conn
+	if owned {
+		tc.conn, tc.reader = nil, nil
+	}
+	tc.mu.Unlock()
+
+	if owned {
+		_ = conn.Close()
+	}
+}
+
+// isConnectionError reports whether err means the connection broke, as opposed to the server sending a reply the client
+// could not decode. Only read-only commands act on it, by re-sending on a fresh connection.
+func isConnectionError(err error) bool {
 	if err == nil {
 		return false
 	}
 
-	// check for EOF (connection closed by server)
-	if errors.Is(err, io.EOF) {
+	// EOF and its mid-frame form both mean the peer went away while the reply was outstanding
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
 
-	// check for closed connection
-	if errors.Is(err, net.ErrClosed) {
-		return true
-	}
-
-	// check for timeout errors
 	if netErr, ok := errors.AsType[net.Error](err); ok && netErr.Timeout() {
 		return true
 	}
 
-	// check for OpError with specific operations
 	if opErr, ok := errors.AsType[*net.OpError](err); ok {
-		// check for connection-related operations
 		switch opErr.Op {
 		case "read", "write", "dial":
 			return true
@@ -136,31 +313,27 @@ func (tc *TCPClient) isConnectionError(err error) bool {
 	return false
 }
 
-// reconnect attempts to establish a new connection to the server
-func (tc *TCPClient) reconnect() error {
-	// close existing connection
-	if err := tc.Close(); err != nil {
-		log.Printf("Failed to close existing connection during reconnect: %v", err)
-	}
-
-	// establish new connection
-	dialer := &net.Dialer{
-		Timeout: 10 * time.Second,
-	}
-	conn, err := dialer.DialContext(context.Background(), "tcp", tc.address)
-	if err != nil {
-		return fmt.Errorf("failed to reconnect to %s: %w", tc.address, err)
-	}
-
-	tc.conn = conn
-	tc.reader = bufio.NewReader(conn)
-	return nil
-}
-
-// Close closes the TCP client connection
+// Close closes the connection and retires the client: later commands fail with net.ErrClosed rather than reconnecting.
+// It is safe to call more than once and from any goroutine, including while a command is in flight — closing the socket
+// unblocks a command parked in a read.
 func (tc *TCPClient) Close() error {
-	if tc.conn == nil {
+	tc.mu.Lock()
+	if tc.closed {
+		tc.mu.Unlock()
 		return nil
 	}
-	return tc.conn.Close()
+	tc.closed = true
+	conn, dialCancel := tc.conn, tc.dialCancel
+	tc.conn, tc.reader, tc.dialCancel = nil, nil, nil
+	close(tc.closeCh) // release anyone queued for a turn
+	tc.mu.Unlock()
+
+	// a command is either dialing or using a socket, never both
+	if dialCancel != nil {
+		dialCancel()
+	}
+	if conn == nil {
+		return nil
+	}
+	return conn.Close()
 }

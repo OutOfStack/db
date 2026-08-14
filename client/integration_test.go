@@ -286,8 +286,14 @@ func TestClient_MessageSizeLimit(t *testing.T) {
 		t.Fatalf("Set() over limit error = %v, want ServerError about size limit", err)
 	}
 
-	// the client stays usable afterwards
-	if err = c.Set(ctx, "users", "after", "ok"); err != nil {
+	// The server drains and closes the connection after a protocol error, so the next mutation can land in that closing
+	// window: it is written, silently discarded, and never answered. The client reports that as ErrOutcomeUnknown instead
+	// of re-sending a write it cannot account for. Either way it drops the dead socket, so the attempt after it connects
+	// afresh and must succeed.
+	if err = c.Set(ctx, "users", "after", "ok"); errors.Is(err, client.ErrOutcomeUnknown) {
+		err = c.Set(ctx, "users", "after", "ok")
+	}
+	if err != nil {
 		t.Fatalf("Set() after rejected request error = %v", err)
 	}
 	if got, err = c.Get(ctx, "users", "after"); err != nil || got != "ok" {
