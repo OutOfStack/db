@@ -117,26 +117,54 @@ func TestClient_ReadsStillFailOver(t *testing.T) {
 	}
 }
 
+// TestClient_CancelDoesNotQuarantineServer pins what a cancelled call may and may not touch. Giving up on a request is
+// a statement about the caller, not about the server, so it must leave selector health alone — otherwise one caller
+// with a tight deadline takes a healthy master out of rotation for the whole failure timeout and later reads silently
+// drift to a standby.
+func TestClient_CancelDoesNotQuarantineServer(t *testing.T) {
+	t.Parallel()
+
+	var masterHits, standbyHits atomic.Int32
+	masterAddr := startHandler(t, func(_ context.Context, _ string, _ []string) protocol.Reply {
+		if masterHits.Add(1) == 1 {
+			time.Sleep(500 * time.Millisecond) // outlast the first caller's deadline, then answer normally
+		}
+		return protocol.SimpleString("OK")
+	})
+	standbyAddr := startHandler(t, okHandler(&standbyHits))
+
+	client := newPool(t, []pool.ServerConfig{
+		{Address: masterAddr, Role: pool.RoleMaster},
+		{Address: standbyAddr, Role: pool.RoleStandby},
+	}, pool.StrategyMasterFirst)
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	if _, err := client.Send(ctx, "GET", []string{"users", "name"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Send() error = %v, want context.DeadlineExceeded", err)
+	}
+
+	// master_first sends reads to the master unless it is marked failed, so where this one lands is the assertion
+	if _, err := client.Send(t.Context(), "GET", []string{"users", "name"}); err != nil {
+		t.Fatalf("second Send() error = %v", err)
+	}
+	if got := standbyHits.Load(); got != 0 {
+		t.Errorf("standby received %d commands, want 0: the cancelled call quarantined a healthy master", got)
+	}
+	if got := masterHits.Load(); got != 2 {
+		t.Errorf("master received %d commands, want 2", got)
+	}
+}
+
 // newDeadPool builds a pool of unreachable servers with a long retry delay, so a test can prove that something other
 // than the delay itself (context cancellation, Close) is what ends the call.
 func newDeadPool(t *testing.T, retryDelay time.Duration) *pool.Client {
 	t.Helper()
 
-	client, err := pool.NewClient(&pool.PoolConfig{
-		Enabled: true,
-		Servers: []pool.ServerConfig{
-			{Address: deadAddr(t), Role: pool.RoleMaster},
-			{Address: deadAddr(t), Role: pool.RoleStandby},
-		},
-		SelectionStrategy: pool.StrategyMasterFirst,
-		MaxRetries:        3,
-		RetryDelay:        retryDelay,
-		FailureTimeout:    time.Hour,
-	})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-	return client
+	return newPool(t, []pool.ServerConfig{
+		{Address: deadAddr(t), Role: pool.RoleMaster},
+		{Address: deadAddr(t), Role: pool.RoleStandby},
+	}, pool.StrategyMasterFirst, retryDelay)
 }
 
 // TestClient_CancelDuringBackoff verifies the retry delay honors the caller's context instead of sleeping through it.
@@ -145,7 +173,6 @@ func TestClient_CancelDuringBackoff(t *testing.T) {
 
 	// long enough that sleeping through even one retry delay would fail the test
 	client := newDeadPool(t, 30*time.Second)
-	t.Cleanup(func() { _ = client.Close() })
 
 	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
 	defer cancel()

@@ -33,14 +33,20 @@ func okHandler(hits *atomic.Int32) network.RequestHandler {
 	}
 }
 
-func newPool(t *testing.T, servers []pool.ServerConfig, strategy pool.SelectionStrategy) *pool.Client {
+// newPool builds an enabled pool over servers. retryDelay is optional and defaults to a delay short enough to be
+// invisible; pass one only when the test is about the delay itself.
+func newPool(t *testing.T, servers []pool.ServerConfig, strategy pool.SelectionStrategy, retryDelay ...time.Duration) *pool.Client {
 	t.Helper()
+	delay := 5 * time.Millisecond
+	if len(retryDelay) > 0 {
+		delay = retryDelay[0]
+	}
 	client, err := pool.NewClient(&pool.PoolConfig{
 		Enabled:           true,
 		Servers:           servers,
 		SelectionStrategy: strategy,
 		MaxRetries:        3,
-		RetryDelay:        5 * time.Millisecond,
+		RetryDelay:        delay,
 		FailureTimeout:    time.Hour,
 	})
 	if err != nil {

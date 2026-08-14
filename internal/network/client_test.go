@@ -355,6 +355,90 @@ func TestClose_InterruptsDial(t *testing.T) {
 	}
 }
 
+// TestSend_CancelDuringDial covers the other half of the dial window: the caller giving up rather than the client being
+// closed. Connecting is part of the call, so a deadline has to bound it, and nothing was sent — a cancelled dial must
+// not come back as an unknown outcome.
+func TestSend_CancelDuringDial(t *testing.T) {
+	t.Parallel()
+
+	// TEST-NET-3 (RFC 5737) is reserved and normally dropped silently, so the dial hangs rather than being refused
+	c := network.NewTCPClient("203.0.113.1:9", network.WithClientIdleTimeout(time.Minute))
+	t.Cleanup(func() { _ = c.Close() })
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	sent := make(chan error, 1)
+	go func() {
+		_, err := c.Send(ctx, "SET", []string{"users", "name", "vlad"})
+		sent <- err
+	}()
+
+	select {
+	case err := <-sent:
+		t.Skipf("this network answers the reserved address instead of dropping it (%v), so no dial hangs to interrupt", err)
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-sent:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Send() error = %v, want it to report the cancellation", err)
+		}
+		if errors.Is(err, network.ErrOutcomeUnknown) {
+			t.Error("a dial that never connected reported an unknown outcome; nothing was sent")
+		}
+		if elapsed := time.Since(start); elapsed > 5*time.Second {
+			t.Errorf("Send() took %v to return after cancellation", elapsed)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("cancelling the context did not interrupt the dial")
+	}
+}
+
+// TestSend_DialFailureThenRedial is the allowed retry path stated positively. A refused dial happens before any byte is
+// written, so it is reported as a plain failure rather than an unknown outcome, and it must not leave the client stuck:
+// the next command connects to the same address once something is listening again.
+func TestSend_DialFailureThenRedial(t *testing.T) {
+	t.Parallel()
+
+	var lc net.ListenConfig
+	ln, err := lc.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	if err = ln.Close(); err != nil { // hold the address, but leave nothing listening on it
+		t.Fatalf("close: %v", err)
+	}
+
+	c := network.NewTCPClient(addr, network.WithClientIdleTimeout(5*time.Second))
+	t.Cleanup(func() { _ = c.Close() })
+
+	_, err = c.Send(t.Context(), "SET", []string{"users", "name", "vlad"})
+	if err == nil {
+		t.Fatal("Send() to a dead address succeeded, want a connection error")
+	}
+	if errors.Is(err, network.ErrOutcomeUnknown) {
+		t.Fatalf("Send() error = %v; a refused dial provably sent nothing", err)
+	}
+
+	var received atomic.Int32
+	startServerAt(t, addr, func(_ context.Context, _ string, _ []string) protocol.Reply {
+		received.Add(1)
+		return protocol.SimpleString("OK")
+	})
+
+	if _, err = c.Send(t.Context(), "SET", []string{"users", "name", "vlad"}); err != nil {
+		t.Fatalf("Send() after the server came up error = %v: the failed dial poisoned the client", err)
+	}
+	if got := received.Load(); got != 1 {
+		t.Errorf("server received %d commands, want 1", got)
+	}
+}
+
 // TestSend_PartialWriteRetriesMutationOnce exercises the rule from the client side: a frame the client could not finish
 // writing never ran, so even a mutation is re-sent — exactly once, on a new connection.
 func TestSend_PartialWriteRetriesMutationOnce(t *testing.T) {

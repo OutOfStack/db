@@ -97,13 +97,6 @@ func (tc *TCPClient) Send(ctx context.Context, cmd string, args []string) (proto
 // ends when the caller's context does — otherwise a request with a 10ms deadline could sit behind one still inside its
 // minute-long idle timeout.
 func (tc *TCPClient) enter(ctx context.Context) error {
-	// prefer making progress: a free gate wins over a context that has only just expired
-	select {
-	case tc.sendGate <- struct{}{}:
-		return nil
-	default:
-	}
-
 	select {
 	case tc.sendGate <- struct{}{}:
 		return nil
@@ -140,14 +133,20 @@ func (tc *TCPClient) attempt(ctx, sendCtx context.Context, cmd string, args []st
 		}
 	}()
 
-	if err = protocol.WriteCommand(conn, cmd, args); err != nil {
+	frame := &frameWriter{w: conn}
+	if err = protocol.WriteCommand(frame, cmd, args); err != nil {
 		tc.drop(conn)
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return protocol.Reply{}, false, ctxErr
 		}
-		// A write error means part of the frame never left this machine, and the server dispatches a command only once it
-		// has decoded the frame whole (see handleConnection), so the command cannot have executed. Dropping the connection
-		// above is what makes that hold: it guarantees the orphaned prefix can never be completed.
+		if mutation && !frame.short {
+			// Every byte reached the socket even though the write reported an error, so the server may well have run the
+			// command. That is the same position a lost reply leaves us in, and it is reported the same way.
+			return protocol.Reply{}, false, fmt.Errorf("%w: %w", ErrOutcomeUnknown, err)
+		}
+		// Part of the frame never left this machine, and the server dispatches a command only once it has decoded the frame
+		// whole (see handleConnection), so the command cannot have executed. Dropping the connection above is what makes
+		// that hold: it guarantees the orphaned prefix can never be completed. A read-only command is retried either way.
 		return protocol.Reply{}, true, fmt.Errorf("failed to send data: %w", err)
 	}
 
@@ -230,6 +229,27 @@ func (tc *TCPClient) dial(ctx context.Context) (net.Conn, *bufio.Reader, error) 
 
 	tc.conn, tc.reader = conn, bufio.NewReader(conn)
 	return tc.conn, tc.reader, nil
+}
+
+// frameWriter forwards the command frame to the socket and records whether the socket ever refused part of a write.
+// Retry safety rests on a failed write having left the frame incomplete, and io.Writer permits a writer to return
+// len(p) alongside an error — net.Conn does not do that today, but the guarantee belongs in this package rather than in
+// an assumption about the socket implementation.
+//
+// A short write proves the frame was cut off. Every byte being accepted does not prove the opposite, since the write
+// may have failed before the last piece was offered at all; that case is reported as an unknown outcome, which is the
+// safe direction for a mutation.
+type frameWriter struct {
+	w     io.Writer
+	short bool
+}
+
+func (fw *frameWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	if n < len(p) {
+		fw.short = true
+	}
+	return n, err
 }
 
 // alive reports whether a connection left over from an earlier command is still usable. The protocol is strictly

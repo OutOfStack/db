@@ -485,8 +485,10 @@ Error handling:
 - `*client.ServerError` — any other error message returned by the server (check with `errors.As`)
 - `Raw(ctx, command)` — escape hatch that sends a raw command line and returns the response text as is
 
-Delivery semantics: a command that fails is never re-sent once its bytes may have reached a server, because repeating
-`Incr`, `Append` or `HSet` would apply it twice. Reads are retried transparently; a mutation in that window returns
+Delivery semantics: a command that fails is never re-sent once a complete frame may have reached a server, because
+repeating `Incr`, `Append` or `HSet` would apply it twice. A command the client could not finish writing is retried — the
+server acts on whole frames only, so a truncated one provably did not run. Reads are retried transparently; a mutation
+that fails after its frame went out returns
 `ErrOutcomeUnknown` instead, and it is the caller's decision whether to re-issue it (safe for an idempotent `Set`) or to
 check the current value first. Cancelling a context interrupts a command in flight, and a cancelled mutation can still
 have been applied, so that error matches both `ErrOutcomeUnknown` and `context.Canceled`.

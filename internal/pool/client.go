@@ -61,9 +61,8 @@ func (c *Client) Send(ctx context.Context, cmd string, args []string) (protocol.
 	var lastErr error
 	maxAttempts := c.config.MaxRetries + 1 // initial attempt + retries
 
-	attempts := 0
-	for ; attempts < maxAttempts; attempts++ {
-		if attempts > 0 {
+	for attempt := range maxAttempts {
+		if attempt > 0 {
 			if err := c.wait(ctx, c.config.RetryDelay); err != nil {
 				return protocol.Reply{}, err
 			}
@@ -81,6 +80,12 @@ func (c *Client) Send(ctx context.Context, cmd string, args []string) (protocol.
 
 		resp, err := conn.Send(ctx, cmd, args)
 		if err != nil {
+			// A call the caller abandoned says nothing about the server: it may have given up while queued for the
+			// connection, before a single byte reached the network. Marking the server failed would route later reads away
+			// from a healthy node for the whole failure timeout, on the strength of one impatient caller.
+			if ctx.Err() != nil {
+				return protocol.Reply{}, fmt.Errorf("failed to send to %s: %w", server.Address, err)
+			}
 			c.selector.MarkFailed(server.Address)
 			lastErr = fmt.Errorf("failed to send to %s: %w", server.Address, err)
 			if errors.Is(err, network.ErrOutcomeUnknown) {
@@ -102,10 +107,9 @@ func (c *Client) Send(ctx context.Context, cmd string, args []string) (protocol.
 		return resp, nil
 	}
 
-	if lastErr != nil {
-		return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts: %w", attempts, lastErr)
-	}
-	return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts", attempts)
+	// falling out of the loop means every attempt failed: MaxRetries is validated non-negative, so it always ran at least
+	// once, and every path that continues records why
+	return protocol.Reply{}, fmt.Errorf("all servers failed after %d attempts: %w", maxAttempts, lastErr)
 }
 
 // wait pauses between attempts, giving up as soon as the caller cancels or the pool is closed. Closing has to reach it:
