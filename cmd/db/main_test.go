@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,6 +18,8 @@ import (
 	"github.com/OutOfStack/db/internal/replication"
 	"github.com/OutOfStack/db/internal/storage"
 	"github.com/OutOfStack/db/internal/wal"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // freeAddr returns a currently-free localhost address for a replication listener.
@@ -95,6 +99,89 @@ func TestLogSupportBoundary(t *testing.T) {
 	}
 }
 
+func TestProcessExitCodeReportsCloseFailure(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, 0, processExitCode(nil, nil))
+	assert.Equal(t, 1, processExitCode(nil, errors.New("close failed")))
+}
+
+func TestPrepareDataDirRejectsUnsafeEngineDataCombinations(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		engine   string
+		wal      bool
+		files    []string
+		override bool
+		wantErr  string
+	}{
+		{"ephemeral over WAL", engine.TypeInMemory, false, []string{"wal-00000000000000000001.log"}, false, "ephemeral"},
+		{"ephemeral override", engine.TypeInMemory, false, []string{"wal-00000000000000000001.log"}, true, ""},
+		{"WAL over tiered", engine.TypeInMemory, true, []string{"seg-0000000001.data"}, false, "tiered"},
+		{"tiered over WAL", engine.TypeTiered, false, []string{"snapshot-00000000000000000001.db"}, false, "wal"},
+		{"mixed formats", engine.TypeInMemory, true, []string{
+			"wal-00000000000000000001.log", "seg-0000000001.data",
+		}, false, "mixed"},
+		{"unrelated file", engine.TypeInMemory, true, []string{"notes.txt"}, false, ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			for _, name := range test.files {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, name), nil, 0o600))
+			}
+			cfg := config.DefaultServerConfig()
+			cfg.Engine.Type = test.engine
+			cfg.Engine.DataDir = dir
+			cfg.WAL.Enabled = test.wal
+			cfg.WAL.DataDir = dir
+
+			lock, err := prepareDataDir(cfg, test.override)
+			if test.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, strings.ToLower(err.Error()), test.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			if lock != nil {
+				require.NoError(t, lock.Close())
+			}
+		})
+	}
+}
+
+func TestPrepareDataDirHoldsDurableLock(t *testing.T) {
+	t.Parallel()
+	cfg := config.DefaultServerConfig()
+	cfg.WAL.Enabled = true
+	cfg.WAL.DataDir = t.TempDir()
+
+	lock, err := prepareDataDir(cfg, false)
+	require.NoError(t, err)
+	_, err = prepareDataDir(cfg, false)
+	require.Error(t, err)
+	require.NoError(t, lock.Close())
+
+	lock, err = prepareDataDir(cfg, false)
+	require.NoError(t, err)
+	require.NoError(t, lock.Close())
+}
+
+func TestStopReplicationBeforeStandbyStartsDoesNotBlock(t *testing.T) {
+	t.Parallel()
+	standby := replication.NewStandby("127.0.0.1:1", nil, t.TempDir(), 0, time.Second, slog.New(slog.DiscardHandler))
+	done := make(chan error, 1)
+	go func() { done <- stopReplication(&replicationRuntime{standby: standby}) }()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("stopReplication blocked on a standby that never started")
+	}
+}
+
 // TestPromoteServesReplication promotes a standby and verifies it both accepts writes and serves replication to a
 // downstream standby.
 func TestPromoteServesReplication(t *testing.T) {
@@ -120,8 +207,8 @@ func TestPromoteServesReplication(t *testing.T) {
 	if err != nil {
 		t.Fatalf("setupReplication() error = %v", err)
 	}
-	repl.standby.Start(t.Context())
-	defer stopReplication(logger, repl)
+	startReplication(t.Context(), logger, repl)
+	defer func() { _ = stopReplication(repl) }()
 
 	if _, err = store.Execute(t.Context(), "SET", []string{"t", "k", "v"}); !errors.Is(err, storage.ErrReadOnly) {
 		t.Fatalf("SET on standby error = %v, want ErrReadOnly", err)

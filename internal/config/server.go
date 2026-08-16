@@ -21,6 +21,8 @@ const (
 	envLogOutput      = "DB_LOG_OUTPUT"
 )
 
+const defaultLogLevel = "info"
+
 // Replication roles.
 const (
 	RoleStandalone = ""
@@ -79,6 +81,7 @@ type ServerNetworkConfig struct {
 	MaxConnections   int           `yaml:"max_connections"`
 	MaxMessageSizeKB int           `yaml:"max_message_size"`
 	IdleTimeout      time.Duration `yaml:"idle_timeout"`
+	ShutdownTimeout  time.Duration `yaml:"shutdown_timeout"`
 }
 
 // ServerLoggingConfig - logging configuration including log level and output destination. Level can be "debug", "info",
@@ -118,9 +121,10 @@ func DefaultServerConfig() *ServerConfig {
 			MaxConnections:   100,
 			MaxMessageSizeKB: 4,
 			IdleTimeout:      time.Minute,
+			ShutdownTimeout:  10 * time.Second,
 		},
 		Logging: ServerLoggingConfig{
-			Level:  "info",
+			Level:  defaultLogLevel,
 			Output: "",
 		},
 	}
@@ -167,41 +171,71 @@ func (c *ServerConfig) Validate() error {
 	if err := c.Engine.validate(c.WAL.Enabled, c.Replication.Role); err != nil {
 		return err
 	}
+	if err := c.Network.validate(); err != nil {
+		return err
+	}
+	if err := c.Logging.validate(); err != nil {
+		return err
+	}
+	if c.Engine.Type == engine.TypeInMemory && c.WAL.DataDir == "" {
+		return errors.New("wal dataDir cannot be empty")
+	}
+	if err := c.WAL.validate(); err != nil {
+		return err
+	}
+	return c.Replication.validate(c.WAL.Enabled)
+}
 
-	if c.Network.Address == "" {
+func (c *ServerNetworkConfig) validate() error {
+	if c.Address == "" {
 		return errors.New("network address cannot be empty")
 	}
-
-	if c.Network.MaxConnections <= 0 {
+	if c.MaxConnections <= 0 {
 		return errors.New("maxConnections must be positive")
 	}
-
-	if c.Network.MaxMessageSizeKB <= 0 {
+	if c.MaxMessageSizeKB <= 0 {
 		return errors.New("maxMessageSize must be positive")
 	}
-
-	if c.Network.IdleTimeout <= 0 {
+	if c.MaxMessageSizeKB > int(^uint(0)>>1)/1024 {
+		return errors.New("maxMessageSize overflows bytes")
+	}
+	if c.IdleTimeout <= 0 {
 		return errors.New("idleTimeout must be positive")
 	}
-
-	if c.WAL.Enabled {
-		if c.WAL.DataDir == "" {
-			return errors.New("wal dataDir cannot be empty")
-		}
-		switch c.WAL.Sync {
-		case wal.SyncAlways, wal.SyncEverySec, wal.SyncNo:
-		default:
-			return fmt.Errorf("unsupported wal sync policy: %s", c.WAL.Sync)
-		}
-		if c.WAL.SegmentSizeMB <= 0 {
-			return errors.New("wal segmentSize must be positive")
-		}
-		if c.WAL.SnapshotInterval <= 0 {
-			return errors.New("wal snapshotInterval must be positive")
-		}
+	if c.ShutdownTimeout <= 0 {
+		return errors.New("shutdownTimeout must be positive")
 	}
+	return nil
+}
 
-	return c.Replication.validate(c.WAL.Enabled)
+func (c *ServerLoggingConfig) validate() error {
+	switch c.Level {
+	case "debug", defaultLogLevel, "warn", "error":
+		return nil
+	default:
+		return fmt.Errorf("unsupported logging level: %s", c.Level)
+	}
+}
+
+func (c *ServerWALConfig) validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	switch c.Sync {
+	case wal.SyncAlways, wal.SyncEverySec, wal.SyncNo:
+	default:
+		return fmt.Errorf("unsupported wal sync policy: %s", c.Sync)
+	}
+	if c.SegmentSizeMB <= 0 {
+		return errors.New("wal segmentSize must be positive")
+	}
+	if c.SegmentSizeMB > int64(^uint64(0)>>1)/(1<<20) {
+		return errors.New("wal segmentSize overflows bytes")
+	}
+	if c.SnapshotInterval <= 0 {
+		return errors.New("wal snapshotInterval must be positive")
+	}
+	return nil
 }
 
 // validate checks engine settings. The tiered engine keeps its own durable segment store, so it is mutually exclusive
@@ -224,17 +258,30 @@ func (c *ServerEngineConfig) validate(walEnabled bool, replicationRole string) e
 	if c.DataDir == "" {
 		return errors.New("engine data_dir cannot be empty")
 	}
+	return c.validateTieredStorage()
+}
+
+func (c *ServerEngineConfig) validateTieredStorage() error {
 	if c.MaxMemoryMB <= 0 {
 		return errors.New("engine max_memory must be positive")
 	}
+	if c.MaxMemoryMB > int64(^uint64(0)>>1)/(1<<20) {
+		return errors.New("engine max_memory overflows bytes")
+	}
 	if c.MaxStorageMB <= 0 {
 		return errors.New("engine max_storage must be positive")
+	}
+	if c.MaxStorageMB > int64(^uint64(0)>>1)/(1<<20) {
+		return errors.New("engine max_storage overflows bytes")
 	}
 	if c.MaxMemoryMB > c.MaxStorageMB {
 		return errors.New("engine max_memory must not exceed max_storage")
 	}
 	if c.SegmentSizeMB <= 0 {
 		return errors.New("engine segment_size must be positive")
+	}
+	if c.SegmentSizeMB > int64(^uint64(0)>>1)/(1<<20) {
+		return errors.New("engine segment_size overflows bytes")
 	}
 	if c.CompactionThreshold <= 0 || c.CompactionThreshold > 1 {
 		return errors.New("engine compaction_threshold must be in (0, 1]")

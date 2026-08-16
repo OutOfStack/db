@@ -207,6 +207,7 @@ network:
   max_connections: 100
   max_message_size: 4
   idle_timeout: 5m
+  shutdown_timeout: 10s
 logging:
   level: "info"
   output: "/log/output.log"
@@ -228,7 +229,8 @@ with `wal.enabled` or replication — the server refuses that combination at sta
 - **engine.compaction_interval**: How often to compact and log cache/disk stats
 
 - **wal.enabled**: Enable durable write-ahead logging (disabled by default)
-- **wal.data_dir**: Directory for WAL segments and snapshots
+- **wal.data_dir**: Directory for WAL segments and snapshots. Required for the in-memory engine even when WAL is
+  disabled, because startup scans it before allowing ephemeral mode
 - **wal.sync**: Fsync policy (`always`, `everysec`, or `no`)
 - **wal.segment_size**: WAL segment rollover size in MiB
 - **wal.snapshot_interval**: Interval between snapshots when data has changed
@@ -242,8 +244,16 @@ with `wal.enabled` or replication — the server refuses that combination at sta
 - **network.max_connections**: Maximum concurrent client connections (enforced by server)
 - **network.max_message_size**: Maximum message size in KB
 - **network.idle_timeout**: Client idle timeout duration
+- **network.shutdown_timeout**: Grace period for decoded commands before their contexts are cancelled (default `10s`).
+  Shutdown then waits for handlers to return before closing persistence, so this is not a hard process-exit deadline
 - **logging.level**: Log level (debug, info, warn, error)
 - **logging.output**: Log output file path (empty for stdout)
+
+Unknown YAML fields, unsupported log levels, and byte-size values that overflow are startup errors. Durable modes hold
+an OS lock on `.db.lock` in their data directory from before recovery until final close, so a second server using that
+directory fails immediately. The lock is advisory on Unix and requires a local filesystem; NFS and other network
+filesystems are unsupported. The lockfile remains after shutdown, but the OS lock is released automatically, including
+after a process crash.
 
 #### Environment Variable Overrides
 
@@ -270,6 +280,11 @@ make build
 ./bin/db -config config.yaml
 ```
 
+A non-empty `-config` path is exact and required: relative and absolute paths are accepted, while a missing or unreadable
+file aborts startup instead of falling back to defaults. Starting the ephemeral in-memory mode over recognized WAL,
+snapshot, or tiered files is also refused. To acknowledge that data will be ignored for one launch, pass
+`-allow-ephemeral-over-data`; this flag never permits opening one durable engine's files with the other engine.
+
 ### Using make:
 ```bash
 make run
@@ -290,9 +305,9 @@ published port, and logs to stdout for `docker logs`. Configure it with environm
 docker run --rm -p 3223:3223 -e DB_LOG_LEVEL=debug -e DB_MAX_CONNECTIONS=500 db
 ```
 
-Settings without an environment variable (engine type, WAL, replication) come from a YAML file. The `-config` path is
-resolved relative to the working directory, which is `/home/nonroot`, so mount the file there — an absolute path is
-rejected, and a path that resolves nowhere falls back to defaults silently:
+Settings without an environment variable (engine type, WAL, replication) come from a YAML file. A relative `-config`
+path is resolved from the working directory, which is `/home/nonroot`, so mount the file there; an absolute mounted path
+works as well. A path that does not exist aborts startup:
 
 ```bash
 docker run --rm -p 3223:3223 \
