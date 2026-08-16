@@ -5,6 +5,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/OutOfStack/db/internal/engine/tiered"
+	"github.com/OutOfStack/db/internal/wal"
 )
 
 // Kind identifies the durable database format present in a directory.
@@ -34,8 +37,10 @@ func Detect(dir string) (Kind, error) {
 			continue
 		}
 		name := entry.Name()
-		walFiles = walFiles || numbered(name, "wal-", ".log", 64) || numbered(name, "snapshot-", ".db", 64)
-		tieredFiles = tieredFiles || numbered(name, "seg-", ".data", 32)
+		walFiles = walFiles ||
+			numbered(name, wal.WALPrefix, wal.WALSuffix, 64) ||
+			numbered(name, wal.SnapshotPrefix, wal.SnapshotSuffix, 64)
+		tieredFiles = tieredFiles || numbered(name, tiered.SegPrefix, tiered.SegSuffix, 32)
 	}
 	switch {
 	case walFiles && tieredFiles:

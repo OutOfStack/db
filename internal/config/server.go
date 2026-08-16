@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"time"
@@ -10,6 +11,9 @@ import (
 	"github.com/OutOfStack/db/internal/engine"
 	"github.com/OutOfStack/db/internal/wal"
 )
+
+// maxMB is the largest megabyte value that converts to bytes (mb << 20) without overflowing an int64.
+const maxMB = math.MaxInt64 / (1 << 20)
 
 // Environment variables that override server configuration values
 const (
@@ -196,7 +200,7 @@ func (c *ServerNetworkConfig) validate() error {
 	if c.MaxMessageSizeKB <= 0 {
 		return errors.New("maxMessageSize must be positive")
 	}
-	if c.MaxMessageSizeKB > int(^uint(0)>>1)/1024 {
+	if c.MaxMessageSizeKB > math.MaxInt/1024 {
 		return errors.New("maxMessageSize overflows bytes")
 	}
 	if c.IdleTimeout <= 0 {
@@ -229,7 +233,7 @@ func (c *ServerWALConfig) validate() error {
 	if c.SegmentSizeMB <= 0 {
 		return errors.New("wal segmentSize must be positive")
 	}
-	if c.SegmentSizeMB > int64(^uint64(0)>>1)/(1<<20) {
+	if c.SegmentSizeMB > maxMB {
 		return errors.New("wal segmentSize overflows bytes")
 	}
 	if c.SnapshotInterval <= 0 {
@@ -265,13 +269,13 @@ func (c *ServerEngineConfig) validateTieredStorage() error {
 	if c.MaxMemoryMB <= 0 {
 		return errors.New("engine max_memory must be positive")
 	}
-	if c.MaxMemoryMB > int64(^uint64(0)>>1)/(1<<20) {
+	if c.MaxMemoryMB > maxMB {
 		return errors.New("engine max_memory overflows bytes")
 	}
 	if c.MaxStorageMB <= 0 {
 		return errors.New("engine max_storage must be positive")
 	}
-	if c.MaxStorageMB > int64(^uint64(0)>>1)/(1<<20) {
+	if c.MaxStorageMB > maxMB {
 		return errors.New("engine max_storage overflows bytes")
 	}
 	if c.MaxMemoryMB > c.MaxStorageMB {
@@ -280,7 +284,7 @@ func (c *ServerEngineConfig) validateTieredStorage() error {
 	if c.SegmentSizeMB <= 0 {
 		return errors.New("engine segment_size must be positive")
 	}
-	if c.SegmentSizeMB > int64(^uint64(0)>>1)/(1<<20) {
+	if c.SegmentSizeMB > maxMB {
 		return errors.New("engine segment_size overflows bytes")
 	}
 	if c.CompactionThreshold <= 0 || c.CompactionThreshold > 1 {

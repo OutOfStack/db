@@ -99,7 +99,7 @@ func OpenWriter(config WriterConfig, lastLSN uint64) (*Writer, error) {
 	if err := os.MkdirAll(config.Dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create WAL directory: %w", err)
 	}
-	segments, err := listNumberedFiles(config.Dir, walPrefix, walSuffix)
+	segments, err := listNumberedFiles(config.Dir, WALPrefix, WALSuffix)
 	if err != nil {
 		return nil, fmt.Errorf("list WAL segments: %w", err)
 	}
@@ -434,7 +434,7 @@ func (w *Writer) reset(state *writerState, lsn uint64) error {
 		state.file = nil
 		state.size = 0
 	}
-	segments, err := listNumberedFiles(w.config.Dir, walPrefix, walSuffix)
+	segments, err := listNumberedFiles(w.config.Dir, WALPrefix, WALSuffix)
 	if err != nil {
 		return fmt.Errorf("list WAL segments for reset: %w", err)
 	}
@@ -551,7 +551,7 @@ func (w *Writer) handleClose(state *writerState) error {
 }
 
 func (w *Writer) syncAllSegments() error {
-	segments, err := listNumberedFiles(w.config.Dir, walPrefix, walSuffix)
+	segments, err := listNumberedFiles(w.config.Dir, WALPrefix, WALSuffix)
 	if err != nil {
 		return fmt.Errorf("list WAL segments during close: %w", err)
 	}
@@ -578,7 +578,7 @@ func (w *Writer) prune(state *writerState, uptoLSN uint64) error {
 			return fmt.Errorf("sync WAL before prune: %w", err)
 		}
 	}
-	segments, err := listNumberedFiles(w.config.Dir, walPrefix, walSuffix)
+	segments, err := listNumberedFiles(w.config.Dir, WALPrefix, WALSuffix)
 	if err != nil {
 		return fmt.Errorf("list WAL segments for prune: %w", err)
 	}

@@ -94,9 +94,7 @@ func run(cfg *config.ServerConfig, logger *slog.Logger, allowEphemeralOverData b
 	if err != nil {
 		return err
 	}
-	if lock != nil {
-		defer func() { err = errors.Join(err, lock.Close()) }()
-	}
+	defer func() { err = errors.Join(err, lock.Close()) }()
 
 	dbEngine, walWriter, snapshotLSN, err := buildEngine(cfg, logger)
 	if err != nil {
@@ -155,7 +153,7 @@ func prepareDataDir(cfg *config.ServerConfig, allowEphemeralOverData bool) (*dat
 	}
 	kind, err := datadir.Detect(dir)
 	if err != nil {
-		return nil, errors.Join(err, closeDataDirLock(lock))
+		return nil, errors.Join(err, lock.Close())
 	}
 	if !durable {
 		if kind != datadir.KindNone && !allowEphemeralOverData {
@@ -170,17 +168,10 @@ func prepareDataDir(cfg *config.ServerConfig, allowEphemeralOverData bool) (*dat
 	if kind != datadir.KindNone && kind != expected {
 		return nil, errors.Join(
 			fmt.Errorf("configured %s storage but found %s database files in %q", expected, kind, dir),
-			closeDataDirLock(lock),
+			lock.Close(),
 		)
 	}
 	return lock, nil
-}
-
-func closeDataDirLock(lock *datadir.Lock) error {
-	if lock == nil {
-		return nil
-	}
-	return lock.Close()
 }
 
 // logSupportBoundary warns when the configuration selects features outside the GA support boundary: the tiered engine

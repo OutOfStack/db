@@ -25,7 +25,11 @@ func Acquire(dir string) (*Lock, error) {
 }
 
 // Close releases ownership. The lockfile remains so another process cannot replace the locked inode by racing cleanup.
+// Close is nil-safe so callers that only conditionally acquired a lock don't need to guard the call themselves.
 func (l *Lock) Close() error {
+	if l == nil {
+		return nil
+	}
 	if err := l.file.Close(); err != nil {
 		return fmt.Errorf("release data directory lock: %w", err)
 	}

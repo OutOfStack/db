@@ -9,7 +9,7 @@ import (
 // OldestRecordLSN returns the LSN of the oldest record still retained on disk. It is the first LSN of the earliest WAL
 // segment; when no segments exist it returns fallback (the caller passes LastLSN+1, meaning "nothing on disk").
 func OldestRecordLSN(dir string, fallback uint64) (uint64, error) {
-	segments, err := listNumberedFiles(dir, walPrefix, walSuffix)
+	segments, err := listNumberedFiles(dir, WALPrefix, WALSuffix)
 	if err != nil {
 		return 0, fmt.Errorf("list WAL segments: %w", err)
 	}
@@ -21,7 +21,7 @@ func OldestRecordLSN(dir string, fallback uint64) (uint64, error) {
 
 // LatestSnapshotInfo returns the LSN and path of the newest snapshot on disk. ok is false when no snapshot exists.
 func LatestSnapshotInfo(dir string) (lsn uint64, path string, ok bool, err error) {
-	snapshots, err := listNumberedFiles(dir, snapshotPrefix, snapshotSuffix)
+	snapshots, err := listNumberedFiles(dir, SnapshotPrefix, SnapshotSuffix)
 	if err != nil {
 		return 0, "", false, fmt.Errorf("list snapshots: %w", err)
 	}
@@ -37,7 +37,7 @@ func LatestSnapshotInfo(dir string) (lsn uint64, path string, ok bool, err error
 // checksum-invalid record at the tail of the final segment is treated as a half-written live record and ends iteration
 // cleanly (the caller streams the rest from the live fan-out); the same damage in an earlier segment is an error.
 func ReadRecordsFrom(dir string, fromLSN uint64, fn func(Record) error) error {
-	segments, err := listNumberedFiles(dir, walPrefix, walSuffix)
+	segments, err := listNumberedFiles(dir, WALPrefix, WALSuffix)
 	if err != nil {
 		return fmt.Errorf("list WAL segments: %w", err)
 	}

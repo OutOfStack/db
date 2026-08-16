@@ -25,7 +25,7 @@ func NewReader(dir string, logger *slog.Logger) *Reader {
 // Replay applies records newer than afterLSN and returns the last valid LSN. A partial or checksum-invalid record in
 // the final segment is truncated as a crash tail; the same damage in an earlier segment is a startup error.
 func (r *Reader) Replay(afterLSN uint64, apply func(Record) error) (uint64, error) {
-	segments, err := listNumberedFiles(r.dir, walPrefix, walSuffix)
+	segments, err := listNumberedFiles(r.dir, WALPrefix, WALSuffix)
 	if err != nil {
 		return afterLSN, fmt.Errorf("list WAL segments: %w", err)
 	}
