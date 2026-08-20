@@ -15,12 +15,12 @@ import (
 func TestLoadServerConfig(t *testing.T) {
 	t.Parallel()
 
-	t.Run("loads default config if file not found", func(t *testing.T) {
+	t.Run("rejects an explicitly missing file", func(t *testing.T) {
 		t.Parallel()
 
-		cfg, err := config.LoadServerConfig("non-existent-config.yaml")
-		require.NoError(t, err)
-		assert.Equal(t, config.DefaultServerConfig(), cfg)
+		_, err := config.LoadServerConfig("non-existent-config.yaml")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "non-existent-config.yaml")
 	})
 
 	t.Run("loads config from file", func(t *testing.T) {
@@ -53,13 +53,14 @@ wal:
 		err = tmpFile.Close()
 		require.NoError(t, err)
 
-		cfg, err := config.LoadServerConfig(filepath.Base(tmpFile.Name()))
+		cfg, err := config.LoadServerConfig(tmpFile.Name())
 		require.NoError(t, err)
 
 		assert.Equal(t, "0.0.0.0:8080", cfg.Network.Address)
 		assert.Equal(t, 50, cfg.Network.MaxConnections)
 		assert.Equal(t, 8, cfg.Network.MaxMessageSizeKB)
 		assert.Equal(t, 10*time.Minute, cfg.Network.IdleTimeout)
+		assert.Equal(t, 10*time.Second, cfg.Network.ShutdownTimeout)
 		assert.Equal(t, "debug", cfg.Logging.Level)
 		assert.Equal(t, "/tmp/test.log", cfg.Logging.Output)
 		assert.Equal(t, "in_memory", cfg.Engine.Type)
@@ -68,6 +69,36 @@ wal:
 		assert.Equal(t, wal.SyncAlways, cfg.WAL.Sync)
 		assert.Equal(t, int64(8), cfg.WAL.SegmentSizeMB)
 		assert.Equal(t, 30*time.Second, cfg.WAL.SnapshotInterval)
+	})
+
+	t.Run("rejects unreadable path", func(t *testing.T) {
+		t.Parallel()
+
+		_, err := config.LoadServerConfig(t.TempDir())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read config file")
+	})
+
+	t.Run("rejects unknown fields", func(t *testing.T) {
+		t.Parallel()
+
+		path := filepath.Join(t.TempDir(), "server.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("network:\n  typo: true\n"), 0o600))
+
+		_, err := config.LoadServerConfig(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "field typo not found")
+	})
+
+	t.Run("rejects multiple documents", func(t *testing.T) {
+		t.Parallel()
+
+		path := filepath.Join(t.TempDir(), "server.yaml")
+		require.NoError(t, os.WriteFile(path, []byte("logging:\n  level: info\n---\nlogging:\n  level: debug\n"), 0o600))
+
+		_, err := config.LoadServerConfig(path)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "one YAML document")
 	})
 
 	t.Run("returns error for invalid config values", func(t *testing.T) {
@@ -93,6 +124,60 @@ network:
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "invalid config: maxConnections must be positive")
 	})
+}
+
+func TestServerConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	maxInt := int(^uint(0) >> 1)
+	tests := []struct {
+		name   string
+		change func(*config.ServerConfig)
+		want   string
+	}{
+		{"unsupported log level", func(cfg *config.ServerConfig) { cfg.Logging.Level = "verbose" }, "logging level"},
+		{"empty ephemeral data directory", func(cfg *config.ServerConfig) { cfg.WAL.DataDir = "" }, "wal dataDir"},
+		{"zero shutdown timeout", func(cfg *config.ServerConfig) { cfg.Network.ShutdownTimeout = 0 }, "shutdownTimeout"},
+		{"message size overflow", func(cfg *config.ServerConfig) {
+			cfg.Network.MaxMessageSizeKB = maxInt/1024 + 1
+		}, "maxMessageSize overflows bytes"},
+		{"WAL segment overflow", func(cfg *config.ServerConfig) {
+			cfg.WAL.Enabled = true
+			cfg.WAL.SegmentSizeMB = int64(^uint64(0)>>1)/(1<<20) + 1
+		}, "wal segmentSize overflows bytes"},
+		{"tiered memory overflow", func(cfg *config.ServerConfig) {
+			cfg.Engine.Type = "tiered"
+			cfg.Engine.MaxMemoryMB = int64(^uint64(0)>>1)/(1<<20) + 1
+			cfg.Engine.MaxStorageMB = cfg.Engine.MaxMemoryMB
+		}, "engine max_memory overflows bytes"},
+		{"tiered storage overflow", func(cfg *config.ServerConfig) {
+			cfg.Engine.Type = "tiered"
+			cfg.Engine.MaxStorageMB = int64(^uint64(0)>>1)/(1<<20) + 1
+		}, "engine max_storage overflows bytes"},
+		{"tiered segment overflow", func(cfg *config.ServerConfig) {
+			cfg.Engine.Type = "tiered"
+			cfg.Engine.SegmentSizeMB = int64(^uint64(0)>>1)/(1<<20) + 1
+		}, "engine segment_size overflows bytes"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := config.DefaultServerConfig()
+			test.change(cfg)
+			err := cfg.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), test.want)
+		})
+	}
+}
+
+func TestDefaultServerConfigUsesTenSecondShutdown(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := config.LoadServerConfig("")
+	require.NoError(t, err)
+	assert.Equal(t, 10*time.Second, cfg.Network.ShutdownTimeout)
 }
 
 func TestServerWALConfigValidation(t *testing.T) {

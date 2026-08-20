@@ -9,11 +9,13 @@ import (
 	"strings"
 )
 
+// Segment and snapshot filename prefix/suffix, exported so other packages (e.g. internal/datadir) can recognize WAL
+// files without duplicating the format.
 const (
-	walPrefix      = "wal-"
-	walSuffix      = ".log"
-	snapshotPrefix = "snapshot-"
-	snapshotSuffix = ".db"
+	WALPrefix      = "wal-"
+	WALSuffix      = ".log"
+	SnapshotPrefix = "snapshot-"
+	SnapshotSuffix = ".db"
 )
 
 type numberedFile struct {
@@ -22,11 +24,11 @@ type numberedFile struct {
 }
 
 func walFilename(firstLSN uint64) string {
-	return fmt.Sprintf("%s%020d%s", walPrefix, firstLSN, walSuffix)
+	return fmt.Sprintf("%s%020d%s", WALPrefix, firstLSN, WALSuffix)
 }
 
 func snapshotFilename(lsn uint64) string {
-	return fmt.Sprintf("%s%020d%s", snapshotPrefix, lsn, snapshotSuffix)
+	return fmt.Sprintf("%s%020d%s", SnapshotPrefix, lsn, SnapshotSuffix)
 }
 
 func listNumberedFiles(dir, prefix, suffix string) ([]numberedFile, error) {

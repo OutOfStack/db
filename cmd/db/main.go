@@ -15,6 +15,7 @@ import (
 
 	"github.com/OutOfStack/db/internal/compute"
 	"github.com/OutOfStack/db/internal/config"
+	"github.com/OutOfStack/db/internal/datadir"
 	"github.com/OutOfStack/db/internal/engine"
 	"github.com/OutOfStack/db/internal/engine/tiered"
 	"github.com/OutOfStack/db/internal/network"
@@ -32,7 +33,10 @@ func main() {
 // the log file) runs before os.Exit.
 func execute() int {
 	var configPath string
+	var allowEphemeralOverData bool
 	flag.StringVar(&configPath, "config", "", "Path to configuration file")
+	flag.BoolVar(&allowEphemeralOverData, "allow-ephemeral-over-data", false,
+		"Allow ephemeral startup when durable database files already exist")
 	flag.Parse()
 
 	cfg, err := config.LoadServerConfig(configPath)
@@ -45,14 +49,19 @@ func execute() int {
 		log.Printf("Failed to configure logging: %v\n", err)
 		return 1
 	}
-	defer func() {
-		if closeErr := closeLog(); closeErr != nil {
-			log.Printf("Failed to close log file: %v", closeErr)
-		}
-	}()
+	runErr := run(cfg, logger, allowEphemeralOverData)
+	if runErr != nil {
+		logger.Error("Server stopped", "error", runErr)
+	}
+	closeErr := closeLog()
+	if closeErr != nil {
+		log.Printf("Failed to close log file: %v", closeErr)
+	}
+	return processExitCode(runErr, closeErr)
+}
 
-	if err = run(cfg, logger); err != nil {
-		logger.Error("Server stopped", "error", err)
+func processExitCode(errs ...error) int {
+	if errors.Join(errs...) != nil {
 		return 1
 	}
 	return 0
@@ -79,20 +88,23 @@ func newLogger(cfg config.ServerLoggingConfig) (*slog.Logger, func() error, erro
 	return slog.New(slog.NewJSONHandler(file, opts)), file.Close, nil
 }
 
-func run(cfg *config.ServerConfig, logger *slog.Logger) error {
+func run(cfg *config.ServerConfig, logger *slog.Logger, allowEphemeralOverData bool) (err error) {
 	logSupportBoundary(cfg, logger)
+	lock, err := prepareDataDir(cfg, allowEphemeralOverData)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, lock.Close()) }()
 
 	dbEngine, walWriter, snapshotLSN, err := buildEngine(cfg, logger)
 	if err != nil {
 		return err
 	}
-	// Only the tiered engine holds resources; the in-memory one is not an io.Closer. Deferred so an early return below
-	// still flushes it.
 	if closer, ok := dbEngine.(io.Closer); ok {
-		defer func() { _ = closer.Close() }()
+		defer func() { err = errors.Join(err, closer.Close()) }()
 	}
 	if walWriter != nil {
-		defer func() { _ = walWriter.Close() }() // the coordinated shutdown below reports the first close error
+		defer func() { err = errors.Join(err, walWriter.Close()) }()
 	}
 
 	var options []storage.Option
@@ -119,6 +131,47 @@ func run(cfg *config.ServerConfig, logger *slog.Logger) error {
 	}
 	comp := compute.New(parser.New(), store, logger, computeOptions...)
 	return serve(cfg, logger, comp, store, walWriter, repl, snapshotLSN)
+}
+
+func prepareDataDir(cfg *config.ServerConfig, allowEphemeralOverData bool) (*datadir.Lock, error) {
+	dir := cfg.WAL.DataDir
+	expected := datadir.KindWAL
+	durable := cfg.WAL.Enabled
+	if cfg.Engine.Type == engine.TypeTiered {
+		dir = cfg.Engine.DataDir
+		expected = datadir.KindTiered
+		durable = true
+	}
+
+	var lock *datadir.Lock
+	var err error
+	if durable {
+		lock, err = datadir.Acquire(dir)
+		if err != nil {
+			return nil, err
+		}
+	}
+	kind, err := datadir.Detect(dir)
+	if err != nil {
+		return nil, errors.Join(err, lock.Close())
+	}
+	if !durable {
+		if kind != datadir.KindNone && !allowEphemeralOverData {
+			return nil, fmt.Errorf(
+				"refusing ephemeral startup over %s database files in %q; use -allow-ephemeral-over-data to proceed",
+				kind, dir,
+			)
+		}
+		//nolint:nilnil // Ephemeral mode does not own a directory lock.
+		return nil, nil
+	}
+	if kind != datadir.KindNone && kind != expected {
+		return nil, errors.Join(
+			fmt.Errorf("configured %s storage but found %s database files in %q", expected, kind, dir),
+			lock.Close(),
+		)
+	}
+	return lock, nil
 }
 
 // logSupportBoundary warns when the configuration selects features outside the GA support boundary: the tiered engine
@@ -217,39 +270,36 @@ func serve(
 		network.WithServerMaxMessageSize(cfg.Network.MaxMessageSizeKB*1024),
 		network.WithServerMaxConnections(cfg.Network.MaxConnections))
 	if err != nil {
-		return err
+		return errors.Join(err, stopReplication(repl))
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	serverDone := make(chan struct{})
+	runtimeCtx, cancelRuntime := context.WithCancel(context.Background())
+	defer cancelRuntime()
+	serverDone := make(chan error, 1)
 	go func() {
-		defer close(serverDone)
-		srv.Start(ctx, requestHandler(comp))
+		serverDone <- srv.Serve(requestHandler(comp))
 	}()
 	// Snapshots run for every role: a standby applies replicated records through the storage layer under the same lock a
 	// snapshot takes, so its snapshots are consistent, and this keeps a promoted node's WAL bounded.
-	snapshotDone := startSnapshotLoop(ctx, cfg, logger, store, walWriter, recoveredSnapshotLSN)
-	replDone := startReplication(ctx, logger, repl)
+	snapshotDone := startSnapshotLoop(runtimeCtx, cfg, logger, store, walWriter, recoveredSnapshotLSN)
+	replDone := startReplication(runtimeCtx, logger, repl)
 
 	logger.Info("Server started", "address", cfg.Network.Address, "role", roleName(cfg.Replication.Role))
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
 	<-sigChan
-
 	logger.Info("Shutting down server...")
-	cancel()
-	stopReplication(logger, repl)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), cfg.Network.ShutdownTimeout)
+	serveErr := srv.Shutdown(shutdownCtx)
+	cancelShutdown()
+	serveErr = errors.Join(serveErr, <-serverDone)
+
+	cancelRuntime()
+	replErr := stopReplication(repl)
 	<-replDone
-	<-serverDone
 	<-snapshotDone
-	if walWriter != nil {
-		if err = walWriter.Close(); err != nil {
-			return fmt.Errorf("close WAL: %w", err)
-		}
-	}
-	return nil
+	return errors.Join(serveErr, replErr)
 }
 
 func requestHandler(comp *compute.Compute) network.RequestHandler {

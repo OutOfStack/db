@@ -32,8 +32,10 @@ const (
 	// maxValueLen keeps valLen distinct from the tombstone marker.
 	maxValueLen = tombstoneMarker - 1
 
-	segPrefix = "seg-"
-	segSuffix = ".data"
+	// SegPrefix and SegSuffix are exported so other packages (e.g. internal/datadir) can recognize segment files
+	// without duplicating the format.
+	SegPrefix = "seg-"
+	SegSuffix = ".data"
 )
 
 // segmentHeader identifies a segment written by this build; the trailing byte is the format version. A non-empty
@@ -445,7 +447,7 @@ func (s *store) close() error {
 }
 
 func segFilename(num uint32) string {
-	return fmt.Sprintf("%s%010d%s", segPrefix, num, segSuffix)
+	return fmt.Sprintf("%s%010d%s", SegPrefix, num, SegSuffix)
 }
 
 func listSegments(dir string) ([]uint32, error) {
@@ -459,10 +461,10 @@ func listSegments(dir string) ([]uint32, error) {
 	var nums []uint32
 	for _, entry := range entries {
 		name := entry.Name()
-		if entry.IsDir() || !strings.HasPrefix(name, segPrefix) || !strings.HasSuffix(name, segSuffix) {
+		if entry.IsDir() || !strings.HasPrefix(name, SegPrefix) || !strings.HasSuffix(name, SegSuffix) {
 			continue
 		}
-		text := strings.TrimSuffix(strings.TrimPrefix(name, segPrefix), segSuffix)
+		text := strings.TrimSuffix(strings.TrimPrefix(name, SegPrefix), SegSuffix)
 		num, parseErr := strconv.ParseUint(text, 10, 32)
 		if parseErr != nil {
 			continue

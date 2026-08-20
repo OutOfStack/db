@@ -17,9 +17,10 @@ import (
 // replicationRuntime bundles the replication components for a server, exactly one of master/standby is non-nil (both
 // nil for a standalone server).
 type replicationRuntime struct {
-	master  *replication.Master
-	standby *replication.Standby
-	admin   *replicationAdmin
+	master         *replication.Master
+	standby        *replication.Standby
+	standbyStarted bool
+	admin          *replicationAdmin
 }
 
 // setupReplication builds the replication runtime for the configured role. It returns nil for a standalone server.
@@ -79,6 +80,7 @@ func startReplication(ctx context.Context, _ *slog.Logger, repl *replicationRunt
 			repl.master.Serve(ctx)
 		}()
 	case repl.standby != nil:
+		repl.standbyStarted = true
 		repl.standby.Start(ctx)
 		close(done)
 	default:
@@ -88,21 +90,21 @@ func startReplication(ctx context.Context, _ *slog.Logger, repl *replicationRunt
 }
 
 // stopReplication tears down replication during shutdown.
-func stopReplication(logger *slog.Logger, repl *replicationRuntime) {
+func stopReplication(repl *replicationRuntime) error {
 	if repl == nil {
-		return
+		return nil
 	}
+	var err error
 	if repl.master != nil {
-		if err := repl.master.Close(); err != nil {
-			logger.Error("Failed to close replication master", "error", err)
-		}
+		err = errors.Join(err, repl.master.Close())
 	}
-	if repl.standby != nil {
+	if repl.standbyStarted {
 		repl.standby.Stop()
 	}
 	if repl.admin != nil {
-		repl.admin.close() // stops a master started by promotion, if any
+		err = errors.Join(err, repl.admin.close()) // stops a master started by promotion, if any
 	}
+	return err
 }
 
 // replicationAdmin implements compute.Admin, handling PROMOTE and REPLICATION STATUS. Its role changes from standby to
@@ -162,17 +164,16 @@ func (a *replicationAdmin) startMasterLocked() error {
 }
 
 // close stops a replication listener started by promotion. It is called during server shutdown.
-func (a *replicationAdmin) close() {
+func (a *replicationAdmin) close() error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.promotedCancel != nil {
 		a.promotedCancel()
 	}
 	if a.promoted != nil {
-		if err := a.promoted.Close(); err != nil {
-			a.logger.Error("Failed to close promoted replication master", "error", err)
-		}
+		return a.promoted.Close()
 	}
+	return nil
 }
 
 // Status returns role, applied LSN, lag, and connection state as a flat key/value array reply.

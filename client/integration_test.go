@@ -8,6 +8,7 @@ import (
 	"net"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,36 +43,36 @@ func startStoppableServer(t *testing.T, opts ...network.TCPServerOption) (addr s
 
 	comp := compute.New(parser.New(), storage.New(engine.New()), logger)
 
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
-	go srv.Start(ctx, func(ctx context.Context, cmd string, args []string) protocol.Reply {
-		res, rErr := comp.HandleRequest(ctx, cmd, args)
-		if rErr != nil {
-			if errors.Is(rErr, storage.ErrNotFound) {
-				return protocol.NullBulkString()
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.Serve(func(ctx context.Context, cmd string, args []string) protocol.Reply {
+			res, rErr := comp.HandleRequest(ctx, cmd, args)
+			if rErr != nil {
+				if errors.Is(rErr, storage.ErrNotFound) {
+					return protocol.NullBulkString()
+				}
+				return protocol.Error(rErr.Error())
 			}
-			return protocol.Error(rErr.Error())
-		}
-		return res
-	})
+			return res
+		})
+	}()
 
 	addr = srv.Addr().String()
 
+	var once sync.Once
 	stop = func() {
-		cancel()
-		// wait until the listener is actually closed so new dials fail deterministically
-		dialer := &net.Dialer{}
-		for range 100 {
-			conn, dErr := dialer.DialContext(context.Background(), "tcp", addr)
-			if dErr != nil {
-				return
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if sErr := srv.Shutdown(ctx); sErr != nil {
+				t.Errorf("Shutdown: %v", sErr)
 			}
-			_ = conn.Close()
-			time.Sleep(10 * time.Millisecond)
-		}
-		t.Fatalf("server at %s did not stop accepting connections", addr)
+			if sErr := <-done; sErr != nil {
+				t.Errorf("Serve: %v", sErr)
+			}
+		})
 	}
+	t.Cleanup(stop)
 
 	return addr, stop
 }

@@ -20,9 +20,14 @@ func startHandler(t *testing.T, handler network.RequestHandler) string {
 	if err != nil {
 		t.Fatalf("NewTCPServer: %v", err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go srv.Start(ctx, handler)
+	go func() { _ = srv.Serve(handler) }()
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := srv.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown: %v", err)
+		}
+	})
 	return srv.Addr().String()
 }
 

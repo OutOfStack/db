@@ -1,8 +1,10 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 
@@ -63,16 +65,10 @@ func LoadServerConfig(filename string) (*ServerConfig, error) {
 	cfg := DefaultServerConfig()
 
 	if filename != "" {
-		data, err := load(filename)
+		var err error
+		cfg, err = decodeServerConfig(filename)
 		if err != nil {
 			return nil, err
-		}
-		if data != nil {
-			fileCfg := *DefaultServerConfig()
-			if err = yaml.Unmarshal(data, &fileCfg); err != nil {
-				return nil, fmt.Errorf("failed to parse config file: %w", err)
-			}
-			cfg = &fileCfg
 		}
 	}
 
@@ -85,6 +81,29 @@ func LoadServerConfig(filename string) (*ServerConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func decodeServerConfig(filename string) (*ServerConfig, error) {
+	// #nosec G304 -- the command-line config path is intentionally operator-controlled.
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, fmt.Errorf("read config file %q: %w", filename, err)
+	}
+
+	cfg := DefaultServerConfig()
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err = decoder.Decode(cfg); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("failed to parse config file: %w", err)
+	}
+	var extra any
+	if err = decoder.Decode(&extra); errors.Is(err, io.EOF) {
+		return cfg, nil
+	}
+	if err == nil {
+		return nil, errors.New("failed to parse config file: expected one YAML document")
+	}
+	return nil, fmt.Errorf("failed to parse config file: %w", err)
 }
 
 // LoadClientConfig loads the client configuration from a YAML file.

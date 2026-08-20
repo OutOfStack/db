@@ -90,24 +90,24 @@ func startServerAt(t *testing.T, address string, handler network.RequestHandler)
 	if err != nil {
 		t.Fatalf("NewTCPServer(%s): %v", address, err)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-	go srv.Start(ctx, handler)
+	done := make(chan error, 1)
+	go func() { done <- srv.Serve(handler) }()
 
 	addr = srv.Addr().String()
+	var once sync.Once
 	stop = func() {
-		cancel()
-		var dialer net.Dialer
-		for range 200 {
-			conn, dErr := dialer.DialContext(context.Background(), "tcp", addr)
-			if dErr != nil {
-				return
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if sErr := srv.Shutdown(ctx); sErr != nil {
+				t.Errorf("Shutdown(%s): %v", addr, sErr)
 			}
-			_ = conn.Close()
-			time.Sleep(10 * time.Millisecond)
-		}
-		t.Fatalf("server at %s did not stop accepting connections", addr)
+			if sErr := <-done; sErr != nil {
+				t.Errorf("Serve(%s): %v", addr, sErr)
+			}
+		})
 	}
+	t.Cleanup(stop)
 	return addr, stop
 }
 

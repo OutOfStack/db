@@ -76,7 +76,7 @@ func writeSnapshotRecords(ctx context.Context, file io.Writer, source SnapshotSo
 }
 
 func removeOldSnapshots(dir string, lsn uint64) error {
-	snapshots, err := listNumberedFiles(dir, snapshotPrefix, snapshotSuffix)
+	snapshots, err := listNumberedFiles(dir, SnapshotPrefix, SnapshotSuffix)
 	if err != nil {
 		return fmt.Errorf("list old snapshots: %w", err)
 	}
@@ -95,7 +95,7 @@ func removeOldSnapshots(dir string, lsn uint64) error {
 
 // LoadLatestSnapshot loads the newest complete snapshot and returns its LSN.
 func LoadLatestSnapshot(dir string, apply func(table, key, value string) error) (uint64, error) {
-	snapshots, err := listNumberedFiles(dir, snapshotPrefix, snapshotSuffix)
+	snapshots, err := listNumberedFiles(dir, SnapshotPrefix, SnapshotSuffix)
 	if err != nil {
 		return 0, fmt.Errorf("list snapshots: %w", err)
 	}
