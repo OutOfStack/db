@@ -352,7 +352,7 @@ func startSnapshotLoop(
 				}
 				writtenLSN, err := createSnapshot(ctx, cfg.WAL.DataDir, store)
 				if err != nil {
-					logger.Error("Failed to write snapshot", "error", err)
+					logger.Error("Snapshot maintenance failed", "error", err, "degraded", store.Status().Degraded)
 					continue
 				}
 				lastSnapshotLSN = writtenLSN

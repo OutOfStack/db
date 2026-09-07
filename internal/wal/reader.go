@@ -22,8 +22,8 @@ func NewReader(dir string, logger *slog.Logger) *Reader {
 	return &Reader{dir: dir, logger: logger}
 }
 
-// Replay applies records newer than afterLSN and returns the last valid LSN. A partial or checksum-invalid record in
-// the final segment is truncated as a crash tail; the same damage in an earlier segment is a startup error.
+// Replay applies records newer than afterLSN and returns the last valid LSN. Only an incomplete EOF read in the final
+// segment is truncated as a crash tail. Checksum failures are corruption, even in the final record.
 func (r *Reader) Replay(afterLSN uint64, apply func(Record) error) (uint64, error) {
 	segments, err := listNumberedFiles(r.dir, WALPrefix, WALSuffix)
 	if err != nil {
@@ -72,12 +72,12 @@ func (r *Reader) replaySegment( //nolint:gocyclo // recovery deliberately keeps 
 		offset -= int64(reader.Buffered())
 
 		record, readErr := readRecord(reader)
-		if errors.Is(readErr, io.EOF) {
+		if errors.Is(readErr, io.EOF) && !errors.Is(readErr, ErrPartialRecord) {
 			break
 		}
 		if readErr != nil {
 			_ = file.Close()
-			if isLast && (errors.Is(readErr, ErrPartialRecord) || errors.Is(readErr, ErrChecksum)) {
+			if isLast && errors.Is(readErr, ErrPartialRecord) {
 				if truncateErr := os.Truncate(segment.path, offset); truncateErr != nil {
 					return position, fmt.Errorf("truncate damaged WAL tail: %w", truncateErr)
 				}

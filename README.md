@@ -285,6 +285,20 @@ file aborts startup instead of falling back to defaults. Starting the ephemeral 
 snapshot, or tiered files is also refused. To acknowledge that data will be ignored for one launch, pass
 `-allow-ephemeral-over-data`; this flag never permits opening one durable engine's files with the other engine.
 
+WAL recovery truncates only an incomplete record at EOF in the final segment. A checksum mismatch, including in the
+last record, aborts startup with the segment path and byte offset and leaves the file unchanged. Restore corrupted
+recovery files from a backup; startup never discards checksum-invalid records automatically.
+
+Snapshots use format version 3: the header, snapshot LSN, and all records are covered by a trailing CRC32 checksum and
+completion marker. Verification finishes before applying any snapshot records or pruning WAL segments. Older snapshot
+formats are refused; there is no automatic migration. A damaged or incomplete snapshot is skipped only when an older
+verified snapshot plus the retained WAL (or the WAL alone) covers its state; otherwise startup fails.
+
+Snapshot or prune failures are logged as degraded maintenance and retried on the next snapshot interval. WAL appends
+continue unless an append or WAL sync failure has latched a terminal error. Internal storage/WAL health exposes these
+states separately, along with the latest written LSN and the observed sync watermark. For `everysec` and `no`, unsynced
+records may survive a process crash, but their survival is not a durability guarantee.
+
 ### Using make:
 ```bash
 make run

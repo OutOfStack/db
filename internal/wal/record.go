@@ -76,7 +76,7 @@ func readRecord(reader *bufio.Reader) (Record, error) {
 		if errors.Is(err, io.EOF) && n == 0 {
 			return Record{}, io.EOF
 		}
-		return Record{}, fmt.Errorf("%w: read LSN: %w", ErrPartialRecord, err)
+		return Record{}, recordReadError("read LSN", err)
 	}
 
 	command, args, err := protocol.ReadCommand(reader, maxRecordSize)
@@ -89,7 +89,7 @@ func readRecord(reader *bufio.Reader) (Record, error) {
 
 	checksumBytes := make([]byte, checksumSize)
 	if _, err = io.ReadFull(reader, checksumBytes); err != nil {
-		return Record{}, fmt.Errorf("%w: read checksum: %w", ErrPartialRecord, err)
+		return Record{}, recordReadError("read checksum", err)
 	}
 
 	record := Record{LSN: binary.BigEndian.Uint64(lsnBytes), Command: command, Args: args}
@@ -106,6 +106,13 @@ func readRecord(reader *bufio.Reader) (Record, error) {
 		return Record{}, err
 	}
 	return record, nil
+}
+
+func recordReadError(operation string, err error) error {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return fmt.Errorf("%w: %s: %w", ErrPartialRecord, operation, err)
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 func validateRecord(record Record) error {

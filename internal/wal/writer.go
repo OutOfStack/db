@@ -72,12 +72,16 @@ type Writer struct {
 	file   *os.File
 	size   int64
 
-	requests  chan writerRequest
-	done      chan struct{}
-	closing   atomic.Bool
-	lastLSN   atomic.Uint64
-	closeOnce sync.Once
-	closeErr  error
+	requests       chan writerRequest
+	done           chan struct{}
+	closing        atomic.Bool
+	lastLSN        atomic.Uint64
+	syncedLSN      atomic.Uint64
+	statusMu       sync.RWMutex
+	terminalErr    error
+	maintenanceErr error
+	closeOnce      sync.Once
+	closeErr       error
 
 	subsMu sync.RWMutex
 	subs   map[*subscriber]struct{}
@@ -120,6 +124,7 @@ func OpenWriter(config WriterConfig, lastLSN uint64) (*Writer, error) {
 		subs:     make(map[*subscriber]struct{}),
 	}
 	writer.lastLSN.Store(lastLSN)
+	writer.syncedLSN.Store(lastLSN)
 	go writer.run()
 	return writer, nil
 }
@@ -306,7 +311,9 @@ func (w *Writer) syncEverySecond(state *writerState) {
 		return
 	}
 	if err := state.file.Sync(); err != nil {
-		state.terminalErr = fmt.Errorf("sync WAL: %w", err)
+		w.fail(state, fmt.Errorf("sync WAL: %w", err))
+	} else {
+		w.syncedLSN.Store(w.lastLSN.Load())
 	}
 }
 
@@ -335,7 +342,7 @@ func (w *Writer) handleBatch(batch []writerRequest, state *writerState) {
 		}
 		lsn, err := w.appendOne(request, state)
 		if err != nil {
-			state.terminalErr = fmt.Errorf("append WAL record: %w", err)
+			w.fail(state, fmt.Errorf("append WAL record: %w", err))
 			results[index].err = state.terminalErr
 			continue
 		}
@@ -348,12 +355,14 @@ func (w *Writer) handleBatch(batch []writerRequest, state *writerState) {
 	// non-durable, and only then do we fail the callers we would ack.
 	if wrote && w.config.Sync == SyncAlways && state.file != nil {
 		if err := state.file.Sync(); err != nil {
-			state.terminalErr = fmt.Errorf("sync WAL: %w", err)
+			w.fail(state, fmt.Errorf("sync WAL: %w", err))
 			for index := range results {
 				if results[index].err == nil {
 					results[index].err = state.terminalErr
 				}
 			}
+		} else {
+			w.syncedLSN.Store(w.lastLSN.Load())
 		}
 	}
 	for index, request := range batch {
@@ -407,20 +416,23 @@ func (w *Writer) appendReplicated(record Record, state *writerState) error {
 	written, err := state.file.Write(encoded)
 	state.size += int64(written)
 	if err != nil {
-		state.terminalErr = fmt.Errorf("append replicated WAL record: %w", err)
+		w.fail(state, fmt.Errorf("append replicated WAL record: %w", err))
 		return state.terminalErr
 	}
 	if written != len(encoded) {
-		state.terminalErr = fmt.Errorf("append replicated WAL record: %w", io.ErrShortWrite)
+		w.fail(state, fmt.Errorf("append replicated WAL record: %w", io.ErrShortWrite))
 		return state.terminalErr
 	}
 	if w.config.Sync != SyncNo && state.file != nil {
 		if err = state.file.Sync(); err != nil {
-			state.terminalErr = fmt.Errorf("sync WAL: %w", err)
+			w.fail(state, fmt.Errorf("sync WAL: %w", err))
 			return state.terminalErr
 		}
 	}
 	w.lastLSN.Store(record.LSN)
+	if w.config.Sync != SyncNo {
+		w.syncedLSN.Store(record.LSN)
+	}
 	return nil
 }
 
@@ -447,6 +459,7 @@ func (w *Writer) reset(state *writerState, lsn uint64) error {
 		return fmt.Errorf("sync WAL directory during reset: %w", err)
 	}
 	w.lastLSN.Store(lsn)
+	w.syncedLSN.Store(lsn)
 	return nil
 }
 
@@ -496,6 +509,7 @@ func (w *Writer) closeForRotation(state *writerState) error {
 		if err := state.file.Sync(); err != nil {
 			return err
 		}
+		w.syncedLSN.Store(w.lastLSN.Load())
 	}
 	return state.file.Close()
 }
@@ -524,6 +538,9 @@ func (w *Writer) handleControl(request writerRequest, state *writerState) bool {
 		if err == nil {
 			err = w.prune(state, request.uptoLSN)
 		}
+		w.statusMu.Lock()
+		w.maintenanceErr = err
+		w.statusMu.Unlock()
 		request.result <- writerResult{err: err}
 		return false
 	case requestClose:
@@ -546,6 +563,11 @@ func (w *Writer) handleClose(state *writerState) error {
 	}
 	if syncErr := w.syncAllSegments(); err == nil && syncErr != nil {
 		err = syncErr
+	}
+	if err == nil {
+		w.syncedLSN.Store(w.lastLSN.Load())
+	} else {
+		w.fail(state, err)
 	}
 	return err
 }
@@ -572,11 +594,29 @@ func (w *Writer) syncAllSegments() error {
 	return nil
 }
 
-func (w *Writer) prune(state *writerState, uptoLSN uint64) error {
+func (w *Writer) preparePrune(state *writerState, uptoLSN uint64) error {
+	if uptoLSN > w.lastLSN.Load() {
+		return fmt.Errorf("snapshot LSN %d exceeds WAL LSN %d", uptoLSN, w.lastLSN.Load())
+	}
+	if err := VerifySnapshot(w.config.Dir, uptoLSN); err != nil {
+		return fmt.Errorf("verify snapshot before prune: %w", err)
+	}
 	if state.file != nil {
 		if err := state.file.Sync(); err != nil {
 			return fmt.Errorf("sync WAL before prune: %w", err)
 		}
+	}
+	// Re-sync the published snapshot and directory before deleting its backing WAL.
+	if err := syncSnapshot(w.config.Dir, uptoLSN); err != nil {
+		return err
+	}
+	w.syncedLSN.Store(max(w.syncedLSN.Load(), uptoLSN))
+	return nil
+}
+
+func (w *Writer) prune(state *writerState, uptoLSN uint64) error {
+	if err := w.preparePrune(state, uptoLSN); err != nil {
+		return err
 	}
 	segments, err := listNumberedFiles(w.config.Dir, WALPrefix, WALSuffix)
 	if err != nil {
