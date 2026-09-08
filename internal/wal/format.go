@@ -13,7 +13,7 @@ import (
 // and get truncated away.
 const (
 	walHeader      = "DBWAL\x00\x02"
-	snapshotHeader = "DBSNP\x00\x02"
+	snapshotHeader = "DBSNP\x00\x03"
 )
 
 // ErrUnsupportedFormat is returned for a file written in a format this build does not read.
@@ -35,22 +35,6 @@ func RequireHeader(file *os.File, header string) (int64, error) {
 		return 0, ErrUnsupportedFormat
 	}
 	return int64(len(header)), nil
-}
-
-// consumeHeader verifies and skips the header on a buffered reader.
-func consumeHeader(reader *bufio.Reader, header string) error {
-	buf, err := reader.Peek(len(header))
-	if len(buf) == 0 && errors.Is(err, io.EOF) {
-		return nil
-	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		return err
-	}
-	if string(buf) != header {
-		return ErrUnsupportedFormat
-	}
-	_, err = reader.Discard(len(header))
-	return err
 }
 
 // WriteHeader writes a format header at the start of a freshly opened, empty file, treating a short write as an error.

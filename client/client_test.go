@@ -138,8 +138,7 @@ func TestClient_Del(t *testing.T) {
 			c := client.NewWithTransport(&fakeTransport{resp: tt.resp})
 
 			err := c.Del(t.Context(), "users", "name")
-			var srvErr *client.ServerError
-			if errors.As(err, &srvErr) {
+			if _, ok := errors.AsType[*client.ServerError](err); ok {
 				if !tt.wantSrvEr {
 					t.Fatalf("Del() unexpected ServerError: %v", err)
 				}
@@ -463,8 +462,7 @@ func TestClient_TypedCommands(t *testing.T) {
 		t.Parallel()
 		_, err := client.NewWithTransport(&fakeTransport{resp: protocol.Error("wrong type: key holds array, INCR requires int or float")}).
 			Incr(t.Context(), "t", "list", "")
-		var srvErr *client.ServerError
-		if !errors.As(err, &srvErr) {
+		if _, ok := errors.AsType[*client.ServerError](err); !ok {
 			t.Fatalf("Incr() error = %v, want ServerError", err)
 		}
 	})

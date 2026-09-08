@@ -33,9 +33,8 @@ func LatestSnapshotInfo(dir string) (lsn uint64, path string, ok bool, err error
 }
 
 // ReadRecordsFrom streams records with LSN >= fromLSN from the on-disk segments to fn, in LSN order. It is used by the
-// replication master to catch a standby up from segment files. Because the master appends concurrently, a partial or
-// checksum-invalid record at the tail of the final segment is treated as a half-written live record and ends iteration
-// cleanly (the caller streams the rest from the live fan-out); the same damage in an earlier segment is an error.
+// replication master to catch a standby up from segment files. An incomplete EOF read in the final segment ends
+// iteration cleanly because the master may still be writing it. Checksum mismatches always return an error.
 func ReadRecordsFrom(dir string, fromLSN uint64, fn func(Record) error) error {
 	segments, err := listNumberedFiles(dir, WALPrefix, WALSuffix)
 	if err != nil {
@@ -58,15 +57,20 @@ func readSegmentRecords(segment numberedFile, isLast bool, fromLSN uint64, fn fu
 	defer func() { _ = file.Close() }()
 
 	for {
+		offset, seekErr := file.Seek(0, io.SeekCurrent)
+		if seekErr != nil {
+			return fmt.Errorf("find WAL offset: %w", seekErr)
+		}
+		offset -= int64(reader.Buffered())
 		record, readErr := readRecord(reader)
-		if errors.Is(readErr, io.EOF) {
+		if errors.Is(readErr, io.EOF) && !errors.Is(readErr, ErrPartialRecord) {
 			return nil
 		}
 		if readErr != nil {
-			if isLast && (errors.Is(readErr, ErrPartialRecord) || errors.Is(readErr, ErrChecksum)) {
+			if isLast && errors.Is(readErr, ErrPartialRecord) {
 				return nil
 			}
-			return fmt.Errorf("read WAL segment %s: %w", segment.path, readErr)
+			return fmt.Errorf("read WAL segment %s at offset %d: %w", segment.path, offset, readErr)
 		}
 		if record.LSN < fromLSN {
 			continue

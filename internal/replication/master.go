@@ -210,6 +210,9 @@ func (m *Master) sendSnapshot(w *bufio.Writer) (uint64, error) {
 	if !ok {
 		return 0, errors.New("standby needs resync but master has no snapshot")
 	}
+	if err = wal.VerifySnapshot(m.dir, lsn); err != nil {
+		return 0, fmt.Errorf("verify snapshot before resync: %w", err)
+	}
 	file, err := os.Open(path) // #nosec G304 -- path comes from the WAL directory listing
 	if err != nil {
 		return 0, fmt.Errorf("open snapshot: %w", err)

@@ -205,7 +205,7 @@ func (s *Standby) applySnapshot(ctx context.Context, reader *bufio.Reader) error
 		return fmt.Errorf("snapshot length %d exceeds maximum %d", length, maxSnapshotBytes)
 	}
 
-	entries, err := parseSnapshot(reader, int64(length)) // #nosec G115 -- length bounded by maxSnapshotBytes above
+	entries, err := parseSnapshot(reader, lsn, int64(length)) // #nosec G115 -- length bounded by maxSnapshotBytes above
 	if err != nil {
 		return fmt.Errorf("parse snapshot: %w", err)
 	}
@@ -231,10 +231,10 @@ func (s *Standby) observeMasterLSN(lsn uint64) {
 	}
 }
 
-func parseSnapshot(reader *bufio.Reader, length int64) ([]engine.Entry, error) {
+func parseSnapshot(reader *bufio.Reader, lsn uint64, length int64) ([]engine.Entry, error) {
 	limited := bufio.NewReader(io.LimitReader(reader, length))
 	var entries []engine.Entry
-	err := wal.ReadSnapshot(limited, func(table, key, value string) error {
+	err := wal.ReadSnapshot(limited, lsn, func(table, key, value string) error {
 		entries = append(entries, engine.Entry{Table: table, Key: key, Value: value})
 		return nil
 	})

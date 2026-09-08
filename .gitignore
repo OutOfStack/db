@@ -22,6 +22,8 @@ bin/
 # instructions
 requirements
 .claude/
+.codex/
 CLAUDE.MD
 AGENTS.md
 /docs/plans
+graphify-out/

@@ -73,9 +73,12 @@ type Storage struct {
 	wal    WAL
 	// mu serializes snapshots (write lock) against mutations (read lock); many mutations may run concurrently so their WAL
 	// appends can be group-committed. It also serializes Promote's gate swap against in-flight mutations.
-	mu       sync.RWMutex
-	gate     *applyGate
-	readOnly atomic.Bool
+	mu             sync.RWMutex
+	gate           *applyGate
+	readOnly       atomic.Bool
+	snapshotMu     sync.Mutex
+	statusMu       sync.RWMutex
+	maintenanceErr error
 }
 
 // New returns a new Storage instance
@@ -128,16 +131,37 @@ func (s *Storage) Snapshot(
 	if s.wal == nil {
 		return nil
 	}
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
 
 	s.mu.Lock()
 	lsn := s.wal.LastLSN()
 	source := captureState(s.engine)
 	s.mu.Unlock()
 
-	if err := write(ctx, lsn, source); err != nil {
-		return err
+	err := write(ctx, lsn, source)
+	if err == nil {
+		err = s.wal.Prune(ctx, lsn)
 	}
-	return s.wal.Prune(ctx, lsn)
+	s.statusMu.Lock()
+	s.maintenanceErr = err
+	s.statusMu.Unlock()
+	return err
+}
+
+// Status reports whether WAL appends remain available and whether snapshot maintenance needs attention.
+func (s *Storage) Status() wal.Status {
+	status := wal.Status{Ready: true}
+	if provider, ok := s.wal.(interface{ Status() wal.Status }); ok {
+		status = provider.Status()
+	}
+	s.statusMu.RLock()
+	defer s.statusMu.RUnlock()
+	if s.maintenanceErr != nil {
+		status.MaintenanceError = s.maintenanceErr
+		status.Degraded = true
+	}
+	return status
 }
 
 // snapshotEntry is one captured value; captured is a point-in-time copy of the engine used so snapshot disk I/O happens
@@ -331,6 +355,8 @@ func (s *Storage) ApplyReplicated(ctx context.Context, record wal.Record) error 
 // ResetToSnapshot replaces all state with a snapshot received during resync: it persists the snapshot, resets the WAL
 // to lsn, and reloads the engine, all under the exclusive lock so it is atomic against Snapshot.
 func (s *Storage) ResetToSnapshot(ctx context.Context, dir string, lsn uint64, entries []engine.Entry) error {
+	s.snapshotMu.Lock()
+	defer s.snapshotMu.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
