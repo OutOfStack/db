@@ -30,3 +30,25 @@ func TestSyncFailureLatchesReadiness(t *testing.T) {
 	writer.fail(&state, errors.New("later failure"))
 	require.Equal(t, first, writer.Status().TerminalError)
 }
+
+func TestPruneWALSyncFailureLatchesReadiness(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, WriteSnapshot(t.Context(), dir, 1, emptySnapshotSource{}))
+	file, err := os.CreateTemp(dir, "wal-sync")
+	require.NoError(t, err)
+	require.NoError(t, file.Close())
+	writer := &Writer{config: WriterConfig{Dir: dir}}
+	writer.lastLSN.Store(1)
+	state := writerState{file: file}
+	require.ErrorIs(t, writer.prune(&state, 1), os.ErrClosed)
+	status := writer.Status()
+	require.False(t, status.Ready)
+	require.True(t, status.Degraded)
+	require.ErrorIs(t, status.TerminalError, os.ErrClosed)
+	require.NoError(t, VerifySnapshot(dir, 1))
+}
+
+type emptySnapshotSource struct{}
+
+func (emptySnapshotSource) Range(func(table, key, value string) bool) {}

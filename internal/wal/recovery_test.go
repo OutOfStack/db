@@ -128,7 +128,7 @@ func TestSnapshotDamageRetainsWALAndReplays(t *testing.T) {
 			require.True(t, writer.Status().Ready)
 			called := false
 			apply := func(_, _, _ string) error { called = true; return nil }
-			require.ErrorIs(t, wal.ReadSnapshot(bufio.NewReader(bytes.NewReader(data)), apply), wal.ErrInvalidSnapshot)
+			require.ErrorIs(t, wal.ReadSnapshot(bufio.NewReader(bytes.NewReader(data)), 3, apply), wal.ErrInvalidSnapshot)
 			lsn, err := wal.LoadLatestSnapshot(dir, apply)
 			require.NoError(t, err)
 			require.Zero(t, lsn)
@@ -353,4 +353,26 @@ func TestSnapshotVerificationFailurePreservesPreviousSnapshot(t *testing.T) {
 	after, err := os.ReadFile(path)
 	require.NoError(t, err)
 	require.Equal(t, before, after)
+}
+
+func TestReadSnapshotRejectsMismatchedLSN(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	state := newTestState()
+	state.set("t", "key", "value")
+	require.NoError(t, wal.WriteSnapshot(t.Context(), dir, 1, state))
+	_, path, _, err := wal.LatestSnapshotInfo(dir)
+	require.NoError(t, err)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	called := false
+	err = wal.ReadSnapshot(bufio.NewReader(bytes.NewReader(data)), 2, func(_, _, _ string) error { called = true; return nil })
+	require.ErrorIs(t, err, wal.ErrInvalidSnapshot)
+	require.False(t, called)
+	recovered := newTestState()
+	require.NoError(t, wal.ReadSnapshot(bufio.NewReader(bytes.NewReader(data)), 1, func(table, key, value string) error {
+		recovered.set(table, key, value)
+		return nil
+	}))
+	require.Equal(t, state, recovered)
 }

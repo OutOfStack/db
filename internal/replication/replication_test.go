@@ -3,6 +3,7 @@ package replication_test
 import (
 	"context"
 	"log/slog"
+	"os"
 	"testing"
 	"time"
 
@@ -234,5 +235,52 @@ func TestReplication_SnapshotResync(t *testing.T) {
 	lsn, _, ok, err := wal.LatestSnapshotInfo(standby.dir)
 	if err != nil || !ok || lsn == 0 {
 		t.Fatalf("standby snapshot info = %d, %v, %v; want a snapshot", lsn, ok, err)
+	}
+}
+
+// TestReplication_RenamedSnapshotNeverAdvancesStandby verifies a snapshot whose filename LSN disagrees with its
+// embedded LSN is refused on resync instead of moving the standby past mutations the snapshot does not contain.
+func TestReplication_RenamedSnapshotNeverAdvancesStandby(t *testing.T) {
+	t.Parallel()
+	master := newNode(t, t.TempDir())
+	standby := newNode(t, t.TempDir())
+	m := startMaster(t, master)
+
+	set(t, master, "t", "k1", "v1")
+	set(t, master, "t", "k2", "v2")
+	set(t, master, "t", "k3", "v3")
+	snapshot(t, master)
+	set(t, master, "t", "k4", "v4")
+
+	// Replace the LSN 3 snapshot's bytes with a valid LSN 1 snapshot: the file name now promises state it lacks.
+	stale := newNode(t, t.TempDir())
+	set(t, stale, "t", "k1", "v1")
+	snapshot(t, stale)
+	_, stalePath, _, err := wal.LatestSnapshotInfo(stale.dir)
+	if err != nil {
+		t.Fatalf("LatestSnapshotInfo(stale): %v", err)
+	}
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	_, path, ok, err := wal.LatestSnapshotInfo(master.dir)
+	if err != nil || !ok {
+		t.Fatalf("LatestSnapshotInfo(master) = %v, %v", ok, err)
+	}
+	if err = os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	sb := replication.NewStandby(m.Addr().String(), standby.store, standby.dir, 0, 10*time.Millisecond, nil)
+	sb.Start(context.Background())
+	t.Cleanup(sb.Stop)
+
+	time.Sleep(300 * time.Millisecond)
+	if got := sb.AppliedLSN(); got != 0 {
+		t.Fatalf("standby applied LSN = %d after mismatched snapshot, want 0", got)
+	}
+	if _, err = standby.engine.Get(context.Background(), "t", "k1"); err == nil {
+		t.Fatal("standby applied a snapshot whose LSN did not match its contents")
 	}
 }

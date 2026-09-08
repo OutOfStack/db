@@ -264,9 +264,11 @@ func verifySnapshotFile(file *os.File, expectedLSN *uint64) (int64, error) {
 	return bodySize, nil
 }
 
-// ReadSnapshot verifies the entire snapshot before invoking apply. Non-seekable replication input is spooled to a
-// temporary file so verification does not require a second in-memory copy of the database.
-func ReadSnapshot(reader *bufio.Reader, apply func(table, key, value string) error) error {
+// ReadSnapshot verifies the entire snapshot, including that its embedded LSN equals lsn, before invoking apply. The
+// LSN check keeps a resync from advancing the standby past the state the snapshot actually holds. Non-seekable
+// replication input is spooled to a temporary file so verification does not require a second in-memory copy of the
+// database.
+func ReadSnapshot(reader *bufio.Reader, lsn uint64, apply func(table, key, value string) error) error {
 	file, err := os.CreateTemp("", "db-snapshot-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create snapshot verification file: %w", err)
@@ -275,7 +277,7 @@ func ReadSnapshot(reader *bufio.Reader, apply func(table, key, value string) err
 	if _, err = io.Copy(file, reader); err != nil {
 		return fmt.Errorf("read snapshot: %w", err)
 	}
-	bodySize, err := verifySnapshotFile(file, nil)
+	bodySize, err := verifySnapshotFile(file, &lsn)
 	if err != nil {
 		return err
 	}

@@ -601,9 +601,12 @@ func (w *Writer) preparePrune(state *writerState, uptoLSN uint64) error {
 	if err := VerifySnapshot(w.config.Dir, uptoLSN); err != nil {
 		return fmt.Errorf("verify snapshot before prune: %w", err)
 	}
+	// The active segment holds acknowledged records, so its fsync failing is the same terminal condition as a failed
+	// batch sync. Snapshot-file and directory sync failures below stay retryable because the WAL remains authoritative.
 	if state.file != nil {
 		if err := state.file.Sync(); err != nil {
-			return fmt.Errorf("sync WAL before prune: %w", err)
+			w.fail(state, fmt.Errorf("sync WAL before prune: %w", err))
+			return state.terminalErr
 		}
 	}
 	// Re-sync the published snapshot and directory before deleting its backing WAL.
