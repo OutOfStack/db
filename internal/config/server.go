@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"strconv"
 	"time"
 
 	"github.com/OutOfStack/db/internal/engine"
+	"github.com/OutOfStack/db/internal/replication"
 	"github.com/OutOfStack/db/internal/wal"
 )
 
@@ -18,6 +20,7 @@ const maxMB = math.MaxInt64 / (1 << 20)
 // Environment variables that override server configuration values
 const (
 	envAddress        = "DB_ADDRESS"
+	envAllowRemote    = "DB_ALLOW_REMOTE"
 	envMaxConnections = "DB_MAX_CONNECTIONS"
 	envMaxMessageSize = "DB_MAX_MESSAGE_SIZE"
 	envIdleTimeout    = "DB_IDLE_TIMEOUT"
@@ -51,6 +54,9 @@ type ServerReplicationConfig struct {
 	ListenAddress    string        `yaml:"listen_address"`
 	MasterAddress    string        `yaml:"master_address"`
 	ReconnectBackoff time.Duration `yaml:"reconnect_backoff"`
+	MaxConnections   int           `yaml:"max_connections"`
+	HandshakeTimeout time.Duration `yaml:"handshake_timeout"`
+	IdleTimeout      time.Duration `yaml:"idle_timeout"`
 	// AllowRemotePromote permits the PROMOTE command over the client port. Off by default: promotion changes which node
 	// accepts writes, so it has to be an explicit operator decision.
 	AllowRemotePromote bool `yaml:"allow_remote_promote"`
@@ -82,6 +88,7 @@ type ServerEngineConfig struct {
 // ServerNetworkConfig - network-related configuration for the database server
 type ServerNetworkConfig struct {
 	Address          string        `yaml:"address"`
+	AllowRemote      bool          `yaml:"allow_remote"`
 	MaxConnections   int           `yaml:"max_connections"`
 	MaxMessageSizeKB int           `yaml:"max_message_size"`
 	IdleTimeout      time.Duration `yaml:"idle_timeout"`
@@ -119,6 +126,9 @@ func DefaultServerConfig() *ServerConfig {
 		Replication: ServerReplicationConfig{
 			Role:             RoleStandalone,
 			ReconnectBackoff: time.Second,
+			MaxConnections:   100,
+			HandshakeTimeout: 10 * time.Second,
+			IdleTimeout:      time.Minute,
 		},
 		Network: ServerNetworkConfig{
 			Address:          defaultAddress,
@@ -139,6 +149,13 @@ func DefaultServerConfig() *ServerConfig {
 func (c *ServerConfig) applyEnvOverrides() error {
 	if v := os.Getenv(envAddress); v != "" {
 		c.Network.Address = v
+	}
+	if v := os.Getenv(envAllowRemote); v != "" {
+		allow, err := strconv.ParseBool(v)
+		if err != nil {
+			return fmt.Errorf("invalid %s: %w", envAllowRemote, err)
+		}
+		c.Network.AllowRemote = allow
 	}
 	if v := os.Getenv(envMaxConnections); v != "" {
 		n, err := strconv.Atoi(v)
@@ -187,12 +204,15 @@ func (c *ServerConfig) Validate() error {
 	if err := c.WAL.validate(); err != nil {
 		return err
 	}
-	return c.Replication.validate(c.WAL.Enabled)
+	return c.Replication.validate(c.WAL.Enabled, c.Network.AllowRemote)
 }
 
 func (c *ServerNetworkConfig) validate() error {
 	if c.Address == "" {
 		return errors.New("network address cannot be empty")
+	}
+	if err := validateListenAddress(c.Address, c.AllowRemote); err != nil {
+		return fmt.Errorf("network.address: %w", err)
 	}
 	if c.MaxConnections <= 0 {
 		return errors.New("maxConnections must be positive")
@@ -302,7 +322,7 @@ func (c *ServerEngineConfig) validateTieredStorage() error {
 }
 
 // validate checks replication settings. Replication requires WAL persistence, since the WAL is the replication stream.
-func (r *ServerReplicationConfig) validate(walEnabled bool) error {
+func (r *ServerReplicationConfig) validate(walEnabled, allowRemote bool) error {
 	switch r.Role {
 	case RoleStandalone:
 		return nil
@@ -322,6 +342,40 @@ func (r *ServerReplicationConfig) validate(walEnabled bool) error {
 	}
 	if !walEnabled {
 		return errors.New("replication requires wal.enabled")
+	}
+	if r.ListenAddress != "" {
+		if err := validateListenAddress(r.ListenAddress, allowRemote); err != nil {
+			return fmt.Errorf("replication.listen_address: %w", err)
+		}
+	}
+	if r.MaxConnections <= 0 {
+		return errors.New("replication max_connections must be positive")
+	}
+	if r.HandshakeTimeout <= 0 {
+		return errors.New("replication handshake_timeout must be positive")
+	}
+	if r.IdleTimeout <= 0 {
+		return errors.New("replication idle_timeout must be positive")
+	}
+	if r.Role == RoleStandby && r.IdleTimeout <= replication.MaxHeartbeatInterval {
+		return fmt.Errorf("replication idle_timeout must exceed %s for standby (maximum master heartbeat interval)",
+			replication.MaxHeartbeatInterval)
+	}
+	return nil
+}
+
+// Hostnames require opt-in because their resolution can change between validation and binding.
+func validateListenAddress(address string, allowRemote bool) error {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid listen address: %w", err)
+	}
+	if _, err = strconv.ParseUint(port, 10, 16); err != nil {
+		return fmt.Errorf("invalid listen port: %w", err)
+	}
+	if !allowRemote && !net.ParseIP(host).IsLoopback() {
+		return errors.New("non-loopback listen address requires network.allow_remote: true (DB_ALLOW_REMOTE=true); " +
+			"use a literal loopback IP for local access")
 	}
 	return nil
 }

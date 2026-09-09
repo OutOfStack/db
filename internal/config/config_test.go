@@ -31,6 +31,7 @@ engine:
   type: "in_memory"
 network:
   address: "0.0.0.0:8080"
+  allow_remote: true
   max_connections: 50
   max_message_size: 8
   idle_timeout: 10m
@@ -108,7 +109,7 @@ wal:
 engine:
   type: "in_memory"
 network:
-  address: "localhost:1234"
+  address: "127.0.0.1:1234"
   max_connections: -1
 `
 		tmpFile, err := os.CreateTemp(".", "config_test_*.yaml")
@@ -257,6 +258,7 @@ func TestServerReplicationConfigValid(t *testing.T) {
 func TestLoadServerConfig_EnvOverrides(t *testing.T) { //nolint:paralleltest // t.Setenv
 	t.Run("env overrides defaults", func(t *testing.T) {
 		t.Setenv("DB_ADDRESS", "0.0.0.0:9999")
+		t.Setenv("DB_ALLOW_REMOTE", "true")
 		t.Setenv("DB_MAX_CONNECTIONS", "7")
 		t.Setenv("DB_MAX_MESSAGE_SIZE", "16")
 		t.Setenv("DB_IDLE_TIMEOUT", "30s")
@@ -295,6 +297,7 @@ logging:
 		require.NoError(t, tmpFile.Close())
 
 		t.Setenv("DB_ADDRESS", "0.0.0.0:9999")
+		t.Setenv("DB_ALLOW_REMOTE", "true")
 
 		cfg, err := config.LoadServerConfig(filepath.Base(tmpFile.Name()))
 		require.NoError(t, err)

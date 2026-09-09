@@ -35,7 +35,8 @@ func setupReplication(
 	case config.RoleStandalone:
 		return nil, nil //nolint:nilnil // standalone has no replication runtime
 	case config.RoleMaster:
-		master, err := replication.NewMaster(cfg.Replication.ListenAddress, writer, cfg.WAL.DataDir, logger)
+		master, err := replication.NewMaster(cfg.Replication.ListenAddress, writer, cfg.WAL.DataDir, logger,
+			replicationOptions(cfg.Replication)...)
 		if err != nil {
 			return nil, err
 		}
@@ -47,7 +48,7 @@ func setupReplication(
 	case config.RoleStandby:
 		standby := replication.NewStandby(
 			cfg.Replication.MasterAddress, store, cfg.WAL.DataDir,
-			writer.LastLSN(), cfg.Replication.ReconnectBackoff, logger)
+			writer.LastLSN(), cfg.Replication.ReconnectBackoff, logger, replicationOptions(cfg.Replication)...)
 		return &replicationRuntime{
 			standby: standby,
 			admin: &replicationAdmin{
@@ -57,11 +58,20 @@ func setupReplication(
 				logger:     logger,
 				dir:        cfg.WAL.DataDir,
 				listenAddr: cfg.Replication.ListenAddress,
+				options:    replicationOptions(cfg.Replication),
 				role:       config.RoleStandby,
 			},
 		}, nil
 	default:
 		return nil, errors.New("unsupported replication role: " + cfg.Replication.Role)
+	}
+}
+
+func replicationOptions(cfg config.ServerReplicationConfig) []replication.Option {
+	return []replication.Option{
+		replication.WithMaxConnections(cfg.MaxConnections),
+		replication.WithHandshakeTimeout(cfg.HandshakeTimeout),
+		replication.WithIdleTimeout(cfg.IdleTimeout),
 	}
 }
 
@@ -116,6 +126,7 @@ type replicationAdmin struct {
 	logger     *slog.Logger
 	dir        string
 	listenAddr string // when set, promotion serves replication here
+	options    []replication.Option
 
 	mu             sync.Mutex
 	role           string
@@ -151,7 +162,7 @@ func (a *replicationAdmin) Promote(_ context.Context) (protocol.Reply, error) {
 
 // startMasterLocked starts a replication listener for the promoted node. The caller holds a.mu.
 func (a *replicationAdmin) startMasterLocked() error {
-	master, err := replication.NewMaster(a.listenAddr, a.writer, a.dir, a.logger)
+	master, err := replication.NewMaster(a.listenAddr, a.writer, a.dir, a.logger, a.options...)
 	if err != nil {
 		return err
 	}

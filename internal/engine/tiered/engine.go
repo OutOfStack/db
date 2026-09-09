@@ -412,7 +412,7 @@ func (e *Engine) Range(fn func(table, key, value string) bool) {
 				var err error
 				value, err = e.store.readValue(location.seg, location.valPos, location.valLen)
 				if err != nil {
-					e.logger.Error("Range read failed", "table", tbl, "key", key, "error", err)
+					e.logger.Error("Range read failed", "table_bytes", len(tbl), "key_bytes", len(key), "error", err)
 					continue
 				}
 			}

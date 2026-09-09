@@ -183,6 +183,9 @@ func logSupportBoundary(cfg *config.ServerConfig, logger *slog.Logger) {
 	}
 	if cfg.Replication.Role != config.RoleStandalone {
 		logger.Warn("Preview feature enabled: replication", "role", cfg.Replication.Role)
+		if cfg.Replication.AllowRemotePromote {
+			logger.Warn("Unsafe operator opt-in: PROMOTE is available to every client that can reach this server")
+		}
 	}
 	if !cfg.WAL.Enabled && cfg.Engine.Type == engine.TypeInMemory {
 		logger.Warn("Ephemeral mode: WAL disabled, data is lost on shutdown")
