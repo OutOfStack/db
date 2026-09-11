@@ -12,6 +12,5 @@ COPY --from=build /out/db /db
 WORKDIR /home/nonroot
 # Make the default data directory writable by the runtime user.
 COPY --from=build --chown=65532:65532 /out/data ./data
-ENV DB_ADDRESS=0.0.0.0:3223
 EXPOSE 3223
 ENTRYPOINT ["/db"]

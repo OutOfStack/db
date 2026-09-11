@@ -14,9 +14,9 @@ import (
 	"github.com/OutOfStack/db/internal/wal"
 )
 
-// defaultHeartbeatInterval is how often the master emits a heartbeat frame to an otherwise-idle standby so it can keep
-// its lag estimate current.
-const defaultHeartbeatInterval = time.Second
+// MaxHeartbeatInterval caps the master's idle heartbeat cadence. Standby timeouts must exceed it so they can connect
+// to any master regardless of that master's configured idle timeout.
+const MaxHeartbeatInterval = time.Second
 
 // Master streams the WAL to connecting standbys. It combines historical segment files on disk with a live fan-out from
 // the WAL writer, so a standby resumes from any LSN: a fresh or lagging standby catches up from segments (or a snapshot
@@ -28,12 +28,16 @@ type Master struct {
 	logger   *slog.Logger
 
 	heartbeatInterval time.Duration
+	limits            peerLimits
+	mu                sync.Mutex
+	connections       map[net.Conn]struct{}
+	closed            bool
 	wg                sync.WaitGroup
 }
 
 // NewMaster starts listening for standby connections on listenAddr. writer and dir are the server's live WAL writer and
 // its data directory.
-func NewMaster(listenAddr string, writer *wal.Writer, dir string, logger *slog.Logger) (*Master, error) {
+func NewMaster(listenAddr string, writer *wal.Writer, dir string, logger *slog.Logger, options ...Option) (*Master, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
@@ -42,12 +46,18 @@ func NewMaster(listenAddr string, writer *wal.Writer, dir string, logger *slog.L
 	if err != nil {
 		return nil, fmt.Errorf("start replication listener: %w", err)
 	}
+	limits := defaultPeerLimits()
+	for _, option := range options {
+		option(&limits)
+	}
 	return &Master{
 		writer:            writer,
 		dir:               dir,
 		listener:          listener,
 		logger:            logger,
-		heartbeatInterval: defaultHeartbeatInterval,
+		heartbeatInterval: min(MaxHeartbeatInterval, max(time.Nanosecond, limits.idleTimeout/2)),
+		limits:            limits,
+		connections:       make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -56,6 +66,8 @@ func (m *Master) Addr() net.Addr { return m.listener.Addr() }
 
 // Serve accepts standby connections until ctx is cancelled or Close is called.
 func (m *Master) Serve(ctx context.Context) {
+	stop := context.AfterFunc(ctx, func() { _ = m.Close() })
+	defer stop()
 	for {
 		conn, err := m.listener.Accept()
 		if err != nil {
@@ -65,37 +77,76 @@ func (m *Master) Serve(ctx context.Context) {
 			m.logger.Error("Replication accept failed", "error", err)
 			continue
 		}
-		m.wg.Go(func() {
+		if !m.trackConnection(conn) {
+			m.logger.Warn("Replication connection limit reached or listener closed", "remote", conn.RemoteAddr())
+			_ = conn.Close()
+			continue
+		}
+		go func() {
+			defer m.wg.Done()
 			m.handleConn(ctx, conn)
-		})
+		}()
 	}
 }
 
 // Close stops accepting connections and waits for in-flight streams to end.
 func (m *Master) Close() error {
+	m.mu.Lock()
+	m.closed = true
 	err := m.listener.Close()
+	for conn := range m.connections {
+		_ = conn.Close()
+	}
+	m.mu.Unlock()
 	m.wg.Wait()
+	if errors.Is(err, net.ErrClosed) {
+		return nil
+	}
 	return err
 }
 
+func (m *Master) trackConnection(conn net.Conn) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed || len(m.connections) >= m.limits.maxConnections {
+		return false
+	}
+	m.connections[conn] = struct{}{}
+	m.wg.Add(1)
+	return true
+}
+
 func (m *Master) handleConn(ctx context.Context, conn net.Conn) {
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		m.mu.Lock()
+		_ = conn.Close()
+		delete(m.connections, conn)
+		m.mu.Unlock()
+	}()
 
 	// Close the connection when the server shuts down so a blocked stream unblocks.
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 
+	if err := conn.SetReadDeadline(time.Now().Add(m.limits.handshakeTimeout)); err != nil {
+		return
+	}
 	reader := bufio.NewReader(conn)
 	requestedLSN, err := readHandshake(reader)
 	if err != nil {
-		m.logger.Warn("Replication handshake failed", "remote", conn.RemoteAddr(), "error", err)
+		m.logger.Warn("Replication handshake failed", "remote", conn.RemoteAddr())
+		m.logger.Debug("Replication handshake details", "remote", conn.RemoteAddr(), "error", err)
 		return
 	}
 	m.logger.Info("Standby connected", "remote", conn.RemoteAddr(), "from_lsn", requestedLSN)
 
-	writer := bufio.NewWriter(conn)
+	if err = conn.SetReadDeadline(time.Time{}); err != nil {
+		return
+	}
+	writer := bufio.NewWriter(deadlineConn{Conn: conn, timeout: m.limits.idleTimeout})
 	if err = m.stream(ctx, writer, requestedLSN); err != nil && !errors.Is(err, context.Canceled) {
-		m.logger.Info("Replication stream ended", "remote", conn.RemoteAddr(), "error", err)
+		m.logger.Info("Replication stream ended", "remote", conn.RemoteAddr())
+		m.logger.Debug("Replication stream error details", "error", err)
 	}
 }
 

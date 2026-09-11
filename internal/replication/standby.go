@@ -39,6 +39,7 @@ type Standby struct {
 	logger     *slog.Logger
 	backoff    time.Duration
 	dialer     *net.Dialer
+	limits     peerLimits
 
 	appliedLSN atomic.Uint64
 	masterLSN  atomic.Uint64
@@ -57,6 +58,7 @@ func NewStandby(
 	appliedLSN uint64,
 	backoff time.Duration,
 	logger *slog.Logger,
+	options ...Option,
 ) *Standby {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
@@ -64,13 +66,18 @@ func NewStandby(
 	if backoff <= 0 {
 		backoff = defaultReconnectBackoff
 	}
+	limits := defaultPeerLimits()
+	for _, option := range options {
+		option(&limits)
+	}
 	s := &Standby{
 		masterAddr: masterAddr,
 		applier:    applier,
 		dir:        dir,
 		logger:     logger,
 		backoff:    backoff,
-		dialer:     &net.Dialer{Timeout: 10 * time.Second},
+		dialer:     &net.Dialer{Timeout: limits.handshakeTimeout},
+		limits:     limits,
 		done:       make(chan struct{}),
 	}
 	s.appliedLSN.Store(appliedLSN)
@@ -121,7 +128,8 @@ func (s *Standby) run(ctx context.Context) {
 			return
 		}
 		if err != nil {
-			s.logger.Warn("Replication disconnected, retrying", "error", err, "backoff", s.backoff)
+			s.logger.Warn("Replication disconnected, retrying", "backoff", s.backoff)
+			s.logger.Debug("Replication disconnect details", "error", err)
 		}
 		select {
 		case <-ctx.Done():
@@ -140,6 +148,9 @@ func (s *Standby) replicateOnce(ctx context.Context) error {
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
 	defer stop()
 
+	if err = conn.SetWriteDeadline(time.Now().Add(s.limits.handshakeTimeout)); err != nil {
+		return err
+	}
 	if err = writeHandshake(conn, s.appliedLSN.Load()); err != nil {
 		return fmt.Errorf("send handshake: %w", err)
 	}
@@ -147,7 +158,7 @@ func (s *Standby) replicateOnce(ctx context.Context) error {
 	defer s.connected.Store(false)
 	s.logger.Info("Replicating from master", "master", s.masterAddr, "from_lsn", s.appliedLSN.Load())
 
-	reader := bufio.NewReader(conn)
+	reader := bufio.NewReader(deadlineConn{Conn: conn, timeout: s.limits.idleTimeout})
 	for {
 		if err = s.readFrame(ctx, reader); err != nil {
 			return err

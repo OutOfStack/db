@@ -31,7 +31,7 @@ docker-build:
 	docker build -t db .
 
 docker-run: docker-build
-	docker run --rm -p 3223:3223 db
+	docker run --rm -p 127.0.0.1:3223:3223 -e DB_ADDRESS=0.0.0.0:3223 -e DB_ALLOW_REMOTE=true db
 
 generate:
 	go tool mockgen -source=internal/compute/compute.go -destination=internal/compute/mocks/compute.go -package=compute_mocks

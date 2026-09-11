@@ -240,13 +240,22 @@ with `wal.enabled` or replication — the server refuses that combination at sta
 - **replication.master_address**: Standby: the master to replicate from
 - **replication.reconnect_backoff**: Standby: pause between reconnect attempts
 - **replication.allow_remote_promote**: Standby: permit the `PROMOTE` command over the client port (default `false`)
-- **network.address**: Server listening address
+- **replication.max_connections**: Maximum concurrent master connections, including handshakes (default `100`)
+- **replication.handshake_timeout**: Whole master handshake deadline; standby dial and handshake-write timeout
+  (default `10s`)
+- **replication.idle_timeout**: Timeout for each streaming socket read/write, including snapshot transfers (default `1m`).
+  Standby configuration requires a value greater than `1s`, the maximum master heartbeat interval; silent masters
+  trigger a reconnect. Leave margin for scheduling and network delays (the default is recommended)
+- **network.address**: Server listening address (default `127.0.0.1:3223`)
+- **network.allow_remote**: Allow non-loopback client and replication listen addresses (default `false`). Wildcard binds,
+  private/public IPs, and hostnames (including `localhost`) require this opt-in; use literal `127.0.0.1` or `::1` locally
 - **network.max_connections**: Maximum concurrent client connections (enforced by server)
 - **network.max_message_size**: Maximum message size in KB
 - **network.idle_timeout**: Client idle timeout duration
 - **network.shutdown_timeout**: Grace period for decoded commands before their contexts are cancelled (default `10s`).
   Shutdown then waits for handlers to return before closing persistence, so this is not a hard process-exit deadline
-- **logging.level**: Log level (debug, info, warn, error)
+- **logging.level**: Log level (debug, info, warn, error). Info logs include command name, outcome, duration, and
+  table/key byte lengths; arguments and error details are debug-only. Debug can expose values and is unsafe for production
 - **logging.output**: Log output file path (empty for stdout)
 
 Unknown YAML fields, unsupported log levels, and byte-size values that overflow are startup errors. Durable modes hold
@@ -261,6 +270,7 @@ Server settings can be overridden with environment variables, which take the hig
 > defaults):
 
 - `DB_ADDRESS` — listening address
+- `DB_ALLOW_REMOTE` — explicit trusted-network opt-in (`true`/`false`), covering both client and replication listeners
 - `DB_MAX_CONNECTIONS` — maximum concurrent client connections
 - `DB_MAX_MESSAGE_SIZE` — maximum message size in KB
 - `DB_IDLE_TIMEOUT` — client idle timeout (Go duration, e.g. `5m`)
@@ -268,6 +278,12 @@ Server settings can be overridden with environment variables, which take the hig
 - `DB_LOG_OUTPUT` — log output file path
 
 ## Running the Server
+
+The server has no authentication or TLS. Use loopback or an explicitly trusted, isolated private network; public or
+untrusted network exposure is unsupported. `network.allow_remote` / `DB_ALLOW_REMOTE` acknowledges this boundary and
+provides no access control. Anyone who can reach either listener can access data; enabling
+`replication.allow_remote_promote` also permits any client to promote a preview standby. See [SECURITY.md](SECURITY.md)
+for deployment and vulnerability-reporting guidance.
 
 ### With default configuration:
 ```bash
@@ -309,14 +325,21 @@ make run
 make docker-run
 # or
 docker build -t db .
-docker run --rm -p 3223:3223 db
+docker run --rm -p 127.0.0.1:3223:3223 \
+  -e DB_ADDRESS=0.0.0.0:3223 -e DB_ALLOW_REMOTE=true db
 ```
 
-The image runs on default configuration with `DB_ADDRESS=0.0.0.0:3223` set, so the server is reachable through the
-published port, and logs to stdout for `docker logs`. Configure it with environment variables:
+The image itself defaults to loopback **inside the container**. Publishing a port alone does not make that listener
+reachable from the host. The quickstart explicitly opts into binding all container interfaces while publishing only on
+host loopback. Other containers on the same Docker network may still reach it: that network must also be trusted.
+Logs go to stdout for `docker logs`.
+
+To publish on a trusted private host interface, replace `192.168.1.10` with that host's private IP and restrict access
+with your firewall:
 
 ```bash
-docker run --rm -p 3223:3223 -e DB_LOG_LEVEL=debug -e DB_MAX_CONNECTIONS=500 db
+docker run --rm -p 192.168.1.10:3223:3223 \
+  -e DB_ADDRESS=0.0.0.0:3223 -e DB_ALLOW_REMOTE=true -e DB_MAX_CONNECTIONS=500 db
 ```
 
 Settings without an environment variable (engine type, WAL, replication) come from a YAML file. A relative `-config`
@@ -324,7 +347,8 @@ path is resolved from the working directory, which is `/home/nonroot`, so mount 
 works as well. A path that does not exist aborts startup:
 
 ```bash
-docker run --rm -p 3223:3223 \
+docker run --rm -p 127.0.0.1:3223:3223 \
+  -e DB_ADDRESS=0.0.0.0:3223 -e DB_ALLOW_REMOTE=true \
   -v "$PWD/config.server.yaml:/home/nonroot/db.yaml" \
   -v db-data:/home/nonroot/data \
   db -config db.yaml

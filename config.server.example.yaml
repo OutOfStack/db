@@ -36,17 +36,21 @@ replication:
   # standby: the master's listen_address to replicate from.
   master_address: ""              # e.g. "127.0.0.1:3224"
   reconnect_backoff: 1s           # standby: pause between reconnect attempts
+  max_connections: 100           # master: includes incomplete handshakes
+  handshake_timeout: 10s         # master: whole handshake; standby: dial and handshake write
+  idle_timeout: 1m               # each streaming socket read/write; standby startup requires greater than 1s
   # standby: permit the PROMOTE command over the client port. Off by default — promotion changes which node accepts
   # writes, so it has to be an explicit operator decision.
   allow_remote_promote: false
 
 network:
   address: "127.0.0.1:3223"
+  allow_remote: false  # opt in only on trusted networks; also applies to replication.listen_address
   max_connections: 100
   max_message_size: 4
   idle_timeout: 5m
   shutdown_timeout: 10s  # grace period before cancelling decoded commands; handlers must still return before close
 
 logging:
-  level: "info"
+  level: "info"  # debug includes full command arguments and error details; unsafe for production
   output: ""  # Empty for stdout, or specify file path like "/var/log/db.log"
