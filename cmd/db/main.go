@@ -33,10 +33,12 @@ func main() {
 // the log file) runs before os.Exit.
 func execute() int {
 	var configPath string
-	var allowEphemeralOverData bool
+	var options startupOptions
 	flag.StringVar(&configPath, "config", "", "Path to configuration file")
-	flag.BoolVar(&allowEphemeralOverData, "allow-ephemeral-over-data", false,
+	flag.BoolVar(&options.allowEphemeralOverData, "allow-ephemeral-over-data", false,
 		"Allow ephemeral startup when durable database files already exist")
+	flag.BoolVar(&options.clearUnverifiedHistory, "clear-unverified-history", false,
+		"Remove the replication unverified-history marker; use only after every standby has been reseeded")
 	flag.Parse()
 
 	cfg, err := config.LoadServerConfig(configPath)
@@ -49,7 +51,7 @@ func execute() int {
 		log.Printf("Failed to configure logging: %v\n", err)
 		return 1
 	}
-	runErr := run(cfg, logger, allowEphemeralOverData)
+	runErr := run(cfg, logger, options)
 	if runErr != nil {
 		logger.Error("Server stopped", "error", runErr)
 	}
@@ -88,15 +90,25 @@ func newLogger(cfg config.ServerLoggingConfig) (*slog.Logger, func() error, erro
 	return slog.New(slog.NewJSONHandler(file, opts)), file.Close, nil
 }
 
-func run(cfg *config.ServerConfig, logger *slog.Logger, allowEphemeralOverData bool) (err error) {
+// startupOptions are the one-launch operator acknowledgements passed on the command line.
+type startupOptions struct {
+	allowEphemeralOverData bool
+	clearUnverifiedHistory bool
+}
+
+func run(cfg *config.ServerConfig, logger *slog.Logger, startup startupOptions) (err error) {
 	logSupportBoundary(cfg, logger)
-	lock, err := prepareDataDir(cfg, allowEphemeralOverData)
+	lock, err := prepareDataDir(cfg, startup.allowEphemeralOverData)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, lock.Close()) }()
 
 	dbEngine, walWriter, snapshotLSN, tailTruncated, err := buildEngine(cfg, logger)
+	if err != nil {
+		return err
+	}
+	unverifiedHistory, err := resolveUnverifiedHistory(cfg, tailTruncated, startup.clearUnverifiedHistory)
 	if err != nil {
 		return err
 	}
@@ -118,7 +130,7 @@ func run(cfg *config.ServerConfig, logger *slog.Logger, allowEphemeralOverData b
 	}
 	store := storage.New(dbEngine, options...)
 
-	repl, err := setupReplication(cfg, logger, store, walWriter, unverifiedHistoryReason(cfg, tailTruncated))
+	repl, err := setupReplication(cfg, logger, store, walWriter, unverifiedHistory)
 	if err != nil {
 		return err
 	}

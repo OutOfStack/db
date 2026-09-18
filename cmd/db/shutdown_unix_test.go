@@ -84,7 +84,7 @@ func TestShutdownHelperProcess(t *testing.T) {
 		return
 	}
 	cfg := shutdownTestConfig(address, os.Getenv(shutdownHelperDataDir))
-	require.NoError(t, run(cfg, slog.New(slog.DiscardHandler), false))
+	require.NoError(t, run(cfg, slog.New(slog.DiscardHandler), startupOptions{}))
 }
 
 func shutdownTestConfig(address, dataDir string) *config.ServerConfig {

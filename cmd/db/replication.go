@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/OutOfStack/db/internal/config"
+	"github.com/OutOfStack/db/internal/datadir"
 	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/replication"
 	"github.com/OutOfStack/db/internal/storage"
@@ -95,6 +96,27 @@ func unverifiedHistoryReason(cfg *config.ServerConfig, tailTruncated bool) strin
 	}
 	return fmt.Sprintf("recovery truncated a torn WAL tail under sync policy %q, so records a standby may already "+
 		"have applied are missing from this master", cfg.WAL.Sync)
+}
+
+// resolveUnverifiedHistory persists and returns the history warning across restarts; standalone nodes skip the marker.
+// clearMarker acknowledges that every standby was reseeded; a newly detected torn tail restores the marker.
+func resolveUnverifiedHistory(cfg *config.ServerConfig, tailTruncated, clearMarker bool) (string, error) {
+	if cfg.Replication.Role == config.RoleStandalone || !cfg.WAL.Enabled {
+		return "", nil
+	}
+	dir := cfg.WAL.DataDir
+	if clearMarker {
+		if err := datadir.ClearUnverifiedHistory(dir); err != nil {
+			return "", err
+		}
+	}
+	if reason := unverifiedHistoryReason(cfg, tailTruncated); reason != "" {
+		if err := datadir.MarkUnverifiedHistory(dir, reason); err != nil {
+			return "", err
+		}
+	}
+	reason, _, err := datadir.UnverifiedHistory(dir)
+	return reason, err
 }
 
 // startReplication launches replication background work. The returned channel closes when a master stops accepting
@@ -224,15 +246,21 @@ const (
 	statusKeyError = "error"
 )
 
-// terminal reports the error that took this node out of service, if any: a standby whose replication ended for good,
-// or a storage that was fenced. The caller holds a.mu.
+// terminal reports a replication, storage, WAL, or engine failure that prevents service or safe promotion.
+// The caller holds a.mu.
 func (a *replicationAdmin) terminal() error {
 	if a.standby != nil {
 		if err := a.standby.Terminal(); err != nil {
 			return err
 		}
 	}
-	return a.store.Terminal()
+	if err := a.store.Terminal(); err != nil {
+		return err
+	}
+	if status := a.store.Status(); !status.Ready && status.TerminalError != nil {
+		return status.TerminalError
+	}
+	return nil
 }
 
 // Status returns role, applied LSN, lag, connection state, and whether the node is terminal as a flat key/value array

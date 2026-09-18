@@ -55,10 +55,12 @@ Preview caveats:
 - Preview failures are contained, not repaired. A standby whose resync fails part-way, or whose history diverges from
   the master's, enters a terminal state: it refuses every command, stops replicating, refuses `PROMOTE`, and
   `REPLICATION STATUS` reports `state terminal` with the cause. Restart it, after emptying its data directory when the
-  message says to reseed. A master that recovered from a torn WAL tail under `everysec` or `no` refuses to resume any
-  standby from a retained LSN, because that standby may hold the record the master lost; reseed such standbys. This
-  detects divergence only by LSN comparison, so a master that rolls back and then advances past a standby's LSN
-  before it reconnects is not detected — the replication GA timeline protocol closes that gap
+  message says to reseed. A master that recovered from a torn WAL tail under `everysec` or `no` records that in its
+  data directory and refuses, across restarts, to resume any standby from a retained LSN, because that standby may
+  hold the record the master lost. Reseed every standby, then restart the master once with
+  `-clear-unverified-history`. Divergence is otherwise detected only by LSN comparison, so a master that rolls back
+  and then advances past a standby's LSN before it reconnects is not detected — the replication GA timeline protocol
+  closes that gap
 - The tiered engine latches its first fsync failure: later writes are refused with `ERR tiered engine is in a
   terminal state`, reads continue, and the process exits nonzero on shutdown. A checksum mismatch in a segment is
   corruption — a cold read of that key fails while other keys stay readable, and a restart refuses to start until the
@@ -317,6 +319,8 @@ A non-empty `-config` path is exact and required: relative and absolute paths ar
 file aborts startup instead of falling back to defaults. Starting the ephemeral in-memory mode over recognized WAL,
 snapshot, or tiered files is also refused. To acknowledge that data will be ignored for one launch, pass
 `-allow-ephemeral-over-data`; this flag never permits opening one durable engine's files with the other engine.
+`-clear-unverified-history` removes the marker a replication master leaves after recovering from a torn WAL tail (see
+the preview caveats); pass it only after every standby has been reseeded.
 
 WAL recovery truncates only an incomplete record at EOF in the final segment. A checksum mismatch, including in the
 last record, aborts startup with the segment path and byte offset and leaves the file unchanged. Restore corrupted
