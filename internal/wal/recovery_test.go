@@ -128,7 +128,7 @@ func TestSnapshotDamageRetainsWALAndReplays(t *testing.T) {
 			require.True(t, writer.Status().Ready)
 			called := false
 			apply := func(_, _, _ string) error { called = true; return nil }
-			require.ErrorIs(t, wal.ReadSnapshot(bufio.NewReader(bytes.NewReader(data)), 3, apply), wal.ErrInvalidSnapshot)
+			require.ErrorIs(t, wal.ReadSnapshot(bytes.NewReader(data), 3, int64(len(data)), apply), wal.ErrInvalidSnapshot)
 			lsn, err := wal.LoadLatestSnapshot(dir, apply)
 			require.NoError(t, err)
 			require.Zero(t, lsn)
@@ -366,13 +366,38 @@ func TestReadSnapshotRejectsMismatchedLSN(t *testing.T) {
 	data, err := os.ReadFile(path)
 	require.NoError(t, err)
 	called := false
-	err = wal.ReadSnapshot(bufio.NewReader(bytes.NewReader(data)), 2, func(_, _, _ string) error { called = true; return nil })
+	length := int64(len(data))
+	err = wal.ReadSnapshot(bytes.NewReader(data), 2, length, func(_, _, _ string) error { called = true; return nil })
 	require.ErrorIs(t, err, wal.ErrInvalidSnapshot)
 	require.False(t, called)
 	recovered := newTestState()
-	require.NoError(t, wal.ReadSnapshot(bufio.NewReader(bytes.NewReader(data)), 1, func(table, key, value string) error {
+	require.NoError(t, wal.ReadSnapshot(bytes.NewReader(data), 1, length, func(table, key, value string) error {
 		recovered.set(table, key, value)
 		return nil
 	}))
 	require.Equal(t, state, recovered)
+}
+
+// TestReadSnapshotRequiresExactLength verifies a snapshot frame is rejected when fewer bytes arrive than were
+// promised, at every cut point, and when the promised length runs past the snapshot's real end.
+func TestReadSnapshotRequiresExactLength(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	state := newTestState()
+	for _, key := range []string{"a", "b", "c"} {
+		state.set("t", key, "value")
+	}
+	require.NoError(t, wal.WriteSnapshot(t.Context(), dir, 1, state))
+	_, path, _, err := wal.LatestSnapshotInfo(dir)
+	require.NoError(t, err)
+	data, err := os.ReadFile(path)
+	require.NoError(t, err)
+	length := int64(len(data))
+	apply := func(_, _, _ string) error { return errors.New("must not apply") }
+	for cut := range length {
+		require.Error(t, wal.ReadSnapshot(bytes.NewReader(data[:cut]), 1, length, apply), "cut at %d", cut)
+	}
+	require.Error(t, wal.ReadSnapshot(bytes.NewReader(data), 1, length+1, apply))
+	// The declared length is what the frame consumes: a shorter declaration leaves the trailer unread and fails.
+	require.ErrorIs(t, wal.ReadSnapshot(bytes.NewReader(data), 1, length-1, apply), wal.ErrInvalidSnapshot)
 }

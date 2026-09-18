@@ -264,18 +264,21 @@ func verifySnapshotFile(file *os.File, expectedLSN *uint64) (int64, error) {
 	return bodySize, nil
 }
 
-// ReadSnapshot verifies the entire snapshot, including that its embedded LSN equals lsn, before invoking apply. The
-// LSN check keeps a resync from advancing the standby past the state the snapshot actually holds. Non-seekable
-// replication input is spooled to a temporary file so verification does not require a second in-memory copy of the
-// database.
-func ReadSnapshot(reader *bufio.Reader, lsn uint64, apply func(table, key, value string) error) error {
+// ReadSnapshot consumes exactly length bytes of a snapshot from reader and verifies all of it — the byte count, the
+// trailing checksum and completion marker, and that its embedded LSN equals lsn — before invoking apply. Fewer bytes
+// than promised is an error even when they end at a record boundary, so a connection that drops mid-transfer can
+// never pass as a complete snapshot. The LSN check keeps a resync from advancing the standby past the state the
+// snapshot actually holds. Non-seekable replication input is spooled to a temporary file so verification does not
+// require a second in-memory copy of the database.
+func ReadSnapshot(reader io.Reader, lsn uint64, length int64, apply func(table, key, value string) error) error {
 	file, err := os.CreateTemp("", "db-snapshot-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create snapshot verification file: %w", err)
 	}
 	defer func() { _ = file.Close(); _ = os.Remove(file.Name()) }()
-	if _, err = io.Copy(file, reader); err != nil {
-		return fmt.Errorf("read snapshot: %w", err)
+	copied, err := io.CopyN(file, reader, length)
+	if err != nil {
+		return fmt.Errorf("read snapshot: received %d of %d bytes: %w", copied, length, err)
 	}
 	bodySize, err := verifySnapshotFile(file, &lsn)
 	if err != nil {

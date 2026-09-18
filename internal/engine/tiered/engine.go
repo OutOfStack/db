@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"log/slog"
 	"maps"
+	"os"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -27,6 +28,12 @@ import (
 // clients as "ERR storage full".
 var ErrStorageFull = errors.New("storage full")
 
+// ErrTerminal wraps the first failure after which the engine can no longer promise that acknowledged writes are
+// durable — an fsync that failed, or a partial record it could not drop. The engine keeps serving reads of what it
+// already holds but refuses every later mutation with this error, reports itself not ready, and returns it from
+// Close; a restart is the only way out, and recovery then rebuilds the keydir from whatever reached disk.
+var ErrTerminal = errors.New("tiered engine is in a terminal state after an unrecoverable failure")
+
 // Config configures a tiered engine.
 type Config struct {
 	Dir                 string
@@ -38,11 +45,11 @@ type Config struct {
 	CompactionInterval  time.Duration // how often to check for compaction and log stats
 }
 
-// loc is a keydir entry: where a live value lives on disk and the record's size.
+// loc is a keydir entry: the segment, start offset and size of the record holding a live value. A cold read fetches
+// the whole record rather than just the value bytes so it can verify the checksum before trusting them.
 type loc struct {
 	seg     uint32
-	valPos  int64
-	valLen  uint32
+	recPos  int64
 	recSize int64
 }
 
@@ -91,17 +98,27 @@ type Engine struct {
 	compacting bool
 	closed     bool
 	compactWG  sync.WaitGroup
+	// maintenanceErr is the outcome of the latest compaction pass: set when it failed, cleared when one succeeds. A failed
+	// pass leaves the dataset intact (the reclaimed segment is unlinked only after its live records are durable), so it
+	// degrades the engine without stopping it. Guarded by mu.
+	maintenanceErr error
 
 	done chan struct{}
 	wg   sync.WaitGroup
 }
 
 // Open recovers the keydir from the on-disk segments and starts the background sync (everysec) and compaction loops.
+// Recovery fails on any corrupt record: only a record cut short at the very end of the newest segment is truncated
+// away, since that is what a crash leaves; everything else stays on disk for the operator to restore or accept losing.
 func Open(cfg Config, logger *slog.Logger) (*Engine, error) {
+	return open(cfg, logger, nil)
+}
+
+func open(cfg Config, logger *slog.Logger, syncFile func(*os.File) error) (*Engine, error) {
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
-	st, err := openStore(cfg.Dir, cfg.SegmentSize, cfg.Sync)
+	st, err := openStore(cfg.Dir, cfg.SegmentSize, cfg.Sync, syncFile)
 	if err != nil {
 		return nil, err
 	}
@@ -131,7 +148,8 @@ func Open(cfg Config, logger *slog.Logger) (*Engine, error) {
 	return e, nil
 }
 
-// Close stops background loops, flushes, and closes the segments.
+// Close stops background loops, flushes, and closes the segments. It returns the terminal error when one was latched,
+// so a process that lost durability exits nonzero even if this final close itself went through.
 func (e *Engine) Close() error {
 	close(e.done)
 	e.wg.Wait()
@@ -153,7 +171,7 @@ func (e *Engine) recover() error {
 		if err := e.store.scanSegment(seg, isLast, func(rec decoded, recPos int64) {
 			e.dropLive(rec.table, rec.key)
 			if !rec.tombstone {
-				e.setLoc(seg, rec.table, rec.key, len(rec.value), recPos, rec.recSize)
+				e.setLoc(seg, rec.table, rec.key, recPos, rec.recSize)
 			}
 		}); err != nil {
 			return err
@@ -180,21 +198,16 @@ func (e *Engine) dropLive(table, key string) {
 	}
 }
 
-// setLoc records a live value's location and adds its live-byte accounting. Callers pass valLen rather than the value
-// itself: recovery never needs the bytes, only their length.
-func (e *Engine) setLoc(seg uint32, table, key string, valLen int, recPos, recSize int64) {
+// setLoc records a live value's location and adds its live-byte accounting. Recovery never needs the value bytes,
+// only where the record is and how large.
+func (e *Engine) setLoc(seg uint32, table, key string, recPos, recSize int64) {
 	e.noteSet(seg, table, key)
 	keys, ok := e.keydir[table]
 	if !ok {
 		keys = make(map[string]loc)
 		e.keydir[table] = keys
 	}
-	keys[key] = loc{
-		seg:     seg,
-		valPos:  valPosFor(recPos, table, key),
-		valLen:  u32(valLen),
-		recSize: recSize,
-	}
+	keys[key] = loc{seg: seg, recPos: recPos, recSize: recSize}
 	e.liveBytes += recSize
 	e.segLive[seg] += recSize
 }
@@ -241,6 +254,9 @@ func (e *Engine) Update(_ context.Context, tbl, key string, fn func(old string, 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if err := e.store.terminalErr; err != nil {
+		return err
+	}
 	var old string
 	location, exists := e.lookup(tbl, key)
 	if exists {
@@ -258,6 +274,9 @@ func (e *Engine) Update(_ context.Context, tbl, key string, fn func(old string, 
 
 // setLocked appends a value and updates the keydir and cache. The caller holds e.mu.
 func (e *Engine) setLocked(tbl, key, value string) error {
+	if err := e.store.terminalErr; err != nil {
+		return err
+	}
 	if len(tbl) > maxFieldLen || len(key) > maxFieldLen {
 		return fmt.Errorf("table/key exceeds %d bytes", maxFieldLen)
 	}
@@ -281,7 +300,7 @@ func (e *Engine) setLocked(tbl, key, value string) error {
 		return err
 	}
 	e.dropLive(tbl, key)
-	e.setLoc(seg, tbl, key, len(value), recPos, recSize)
+	e.setLoc(seg, tbl, key, recPos, recSize)
 	e.lru.put(tbl, key, value)
 	return e.store.syncIfAlways()
 }
@@ -331,7 +350,7 @@ func (e *Engine) tryGet(tbl, key string) (value string, done bool, err error) {
 		return "", false, nil // segment reclaimed since the lookup
 	}
 
-	value, err = readPinnedValue(location.seg, pinned, location.valPos, location.valLen)
+	value, err = readPinnedValue(pinned, tbl, key, location)
 	e.store.unpin(location.seg)
 	if err != nil {
 		return "", true, err
@@ -355,7 +374,7 @@ func (e *Engine) value(tbl, key string, location loc) (string, error) {
 		return value, nil
 	}
 	e.misses.Add(1)
-	value, err := e.store.readValue(location.seg, location.valPos, location.valLen)
+	value, err := e.store.readValue(tbl, key, location)
 	if err != nil {
 		return "", err
 	}
@@ -368,6 +387,9 @@ func (e *Engine) Del(_ context.Context, tbl, key string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	if err := e.store.terminalErr; err != nil {
+		return err
+	}
 	if _, ok := e.lookup(tbl, key); !ok {
 		return engine.ErrNotFound
 	}
@@ -410,7 +432,7 @@ func (e *Engine) Range(fn func(table, key, value string) bool) {
 			value, hit := e.lru.get(tbl, key)
 			if !hit {
 				var err error
-				value, err = e.store.readValue(location.seg, location.valPos, location.valLen)
+				value, err = e.store.readValue(tbl, key, location)
 				if err != nil {
 					e.logger.Error("Range read failed", "table_bytes", len(tbl), "key_bytes", len(key), "error", err)
 					continue
@@ -443,6 +465,23 @@ func (e *Engine) keyCount() int {
 	return count
 }
 
+// Status reports engine health in the same shape the WAL writer uses, so the storage layer and the status command read
+// both engines alike. Ready is false once the engine is closed or has latched a terminal error; Degraded also covers a
+// failed compaction pass. The LSN fields stay zero: the tiered engine keeps no log sequence.
+func (e *Engine) Status() wal.Status {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return wal.Status{
+		Ready:            !e.closed && e.store.terminalErr == nil,
+		Degraded:         e.store.terminalErr != nil || e.maintenanceErr != nil,
+		TerminalError:    e.store.terminalErr,
+		MaintenanceError: e.maintenanceErr,
+	}
+}
+
+// syncLoop fsyncs the active segment once a second under the everysec policy. A failed fsync latches the terminal
+// error inside the store, so the loop exits: retrying would only repeat the failure, and the latch already refuses the
+// writes that would have needed syncing.
 func (e *Engine) syncLoop() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
@@ -452,10 +491,12 @@ func (e *Engine) syncLoop() {
 			return
 		case <-ticker.C:
 			e.mu.Lock()
-			if err := e.store.syncActive(); err != nil {
-				e.logger.Error("Tiered sync failed", "error", err)
-			}
+			err := e.store.syncActive()
 			e.mu.Unlock()
+			if err != nil {
+				e.logger.Error("Tiered sync failed; engine refuses further writes until restart", "error", err)
+				return
+			}
 		}
 	}
 }

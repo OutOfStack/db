@@ -10,9 +10,15 @@ import (
 
 // Reader replays ordered WAL segments from a directory.
 type Reader struct {
-	dir    string
-	logger *slog.Logger
+	dir       string
+	logger    *slog.Logger
+	truncated bool
 }
+
+// TruncatedTail reports whether Replay cut a torn record off the end of the newest segment. Under a sync policy other
+// than always that record may already have been streamed to a standby before it was lost, so a replication master uses
+// this to refuse incremental resumption until its standbys are reseeded.
+func (r *Reader) TruncatedTail() bool { return r.truncated }
 
 // NewReader creates a WAL reader. A nil logger discards recovery warnings.
 func NewReader(dir string, logger *slog.Logger) *Reader {
@@ -81,6 +87,7 @@ func (r *Reader) replaySegment( //nolint:gocyclo // recovery deliberately keeps 
 				if truncateErr := os.Truncate(segment.path, offset); truncateErr != nil {
 					return position, fmt.Errorf("truncate damaged WAL tail: %w", truncateErr)
 				}
+				r.truncated = true
 				r.logger.Warn("Truncated damaged WAL tail", "segment", segment.path, "offset", offset, "error", readErr)
 				return position, nil
 			}

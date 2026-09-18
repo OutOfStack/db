@@ -80,14 +80,17 @@ func (e *Engine) Compact() {
 		e.mu.Unlock()
 	})
 	e.store.unpin(seg)
-	if scanErr != nil || rewriteErr != nil {
-		if scanErr == nil {
-			scanErr = rewriteErr
-		}
-		e.logger.Error("Compaction failed", "segment", seg, "error", scanErr)
-		return
+	err := scanErr
+	if err == nil {
+		err = rewriteErr
 	}
-	if err := e.finishCompaction(seg); err != nil {
+	if err == nil {
+		err = e.finishCompaction(seg)
+	}
+	e.mu.Lock()
+	e.maintenanceErr = err
+	e.mu.Unlock()
+	if err != nil {
 		e.logger.Error("Compaction failed", "segment", seg, "error", err)
 	}
 }
@@ -98,7 +101,7 @@ func (e *Engine) beginCompaction() (uint32, *os.File, bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if e.compacting || e.closed {
+	if e.compacting || e.closed || e.store.terminalErr != nil {
 		return 0, nil, false
 	}
 	seg, ok := e.pickCompactible()
@@ -147,7 +150,7 @@ func (e *Engine) rewriteRecord(seg uint32, rec decoded, recPos int64) error {
 		return e.keepTombstone(seg, rec)
 	}
 	location, ok := e.lookup(rec.table, rec.key)
-	if !ok || location.seg != seg || location.valPos != valPosFor(recPos, rec.table, rec.key) {
+	if !ok || location.seg != seg || location.recPos != recPos {
 		return nil // dead: overwritten or deleted since it was written
 	}
 	newRec := encodeRecord(rec.table, rec.key, rec.value, false)
@@ -156,7 +159,7 @@ func (e *Engine) rewriteRecord(seg uint32, rec decoded, recPos int64) error {
 		return err
 	}
 	e.dropLive(rec.table, rec.key)
-	e.setLoc(newSeg, rec.table, rec.key, len(rec.value), newRecPos, int64(len(newRec)))
+	e.setLoc(newSeg, rec.table, rec.key, newRecPos, int64(len(newRec)))
 	return nil
 }
 

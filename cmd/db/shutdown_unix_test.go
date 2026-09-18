@@ -70,7 +70,7 @@ func TestSIGTERMPreservesAcknowledgedWrite(t *testing.T) {
 	}
 
 	cfg := shutdownTestConfig(address, dataDir)
-	dbEngine, writer, _, err := recoverPersistence(cfg, slog.New(slog.DiscardHandler))
+	dbEngine, writer, _, _, err := recoverPersistence(cfg, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, writer.Close()) }()
 	value, err := dbEngine.Get(t.Context(), "users", "name")
