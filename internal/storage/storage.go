@@ -19,6 +19,10 @@ var (
 	// ErrReadOnly is returned for mutating commands on a replication standby. It maps to the "ERR readonly" wire reply so
 	// a pool client can re-route the write to a master.
 	ErrReadOnly = errors.New("readonly")
+	// ErrTerminal is returned for every command once the storage has been fenced: its state can no longer be trusted
+	// (a resync that failed part-way, or a replication history that diverged from the master's) and only a restart —
+	// with a reseed where the error says so — clears it.
+	ErrTerminal = errors.New("storage is in a terminal state")
 )
 
 // Engine is an interface for a storage engine
@@ -79,7 +83,11 @@ type Storage struct {
 	snapshotMu     sync.Mutex
 	statusMu       sync.RWMutex
 	maintenanceErr error
+	terminalErr    error
 }
+
+// statusProvider is implemented by the WAL writer and by engines that track their own durability (the tiered engine).
+type statusProvider interface{ Status() wal.Status }
 
 // New returns a new Storage instance
 func New(engine Engine, options ...Option) *Storage {
@@ -134,6 +142,13 @@ func (s *Storage) Snapshot(
 	s.snapshotMu.Lock()
 	defer s.snapshotMu.Unlock()
 
+	// ResetToSnapshot fences under this same lock, so a check here sees every fence a failed resync raised. Without it a
+	// resync that reset the WAL to the master's LSN but failed to publish the snapshot would let maintenance write the
+	// engine's older state under that newer LSN, and the restart that is supposed to repair the standby would trust it.
+	if err := s.Terminal(); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	lsn := s.wal.LastLSN()
 	source := captureState(s.engine)
@@ -149,11 +164,24 @@ func (s *Storage) Snapshot(
 	return err
 }
 
-// Status reports whether WAL appends remain available and whether snapshot maintenance needs attention.
+// Status reports whether the storage can still serve and persist: it folds in the WAL writer's latch, the engine's own
+// health when it tracks one, snapshot maintenance failures, and the fence. A fenced storage is not ready and reports
+// the fence as its terminal error.
 func (s *Storage) Status() wal.Status {
 	status := wal.Status{Ready: true}
-	if provider, ok := s.wal.(interface{ Status() wal.Status }); ok {
+	if provider, ok := s.wal.(statusProvider); ok {
 		status = provider.Status()
+	}
+	if provider, ok := s.engine.(statusProvider); ok {
+		engineStatus := provider.Status()
+		status.Ready = status.Ready && engineStatus.Ready
+		status.Degraded = status.Degraded || engineStatus.Degraded
+		if status.TerminalError == nil {
+			status.TerminalError = engineStatus.TerminalError
+		}
+		if status.MaintenanceError == nil {
+			status.MaintenanceError = engineStatus.MaintenanceError
+		}
 	}
 	s.statusMu.RLock()
 	defer s.statusMu.RUnlock()
@@ -161,7 +189,29 @@ func (s *Storage) Status() wal.Status {
 		status.MaintenanceError = s.maintenanceErr
 		status.Degraded = true
 	}
+	if s.terminalErr != nil {
+		status.Ready = false
+		status.Degraded = true
+		status.TerminalError = s.terminalErr
+	}
 	return status
+}
+
+// Fence puts the storage into a terminal state: every command, reads included, is refused with ErrTerminal wrapping
+// the first cause until the process restarts. Admin commands bypass the storage, so the status command still answers.
+func (s *Storage) Fence(cause error) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	if s.terminalErr == nil {
+		s.terminalErr = fmt.Errorf("%w: %w", ErrTerminal, cause)
+	}
+}
+
+// Terminal returns the fence error, or nil while the storage is serving.
+func (s *Storage) Terminal() error {
+	s.statusMu.RLock()
+	defer s.statusMu.RUnlock()
+	return s.terminalErr
 }
 
 // snapshotEntry is one captured value; captured is a point-in-time copy of the engine used so snapshot disk I/O happens
@@ -189,6 +239,9 @@ func captureState(source SnapshotSource) captured {
 
 // Execute executes the given command with arguments and returns the result or an error
 func (s *Storage) Execute(ctx context.Context, cmd string, args []string) (protocol.Reply, error) {
+	if err := s.Terminal(); err != nil {
+		return protocol.Reply{}, err
+	}
 	switch cmd {
 	case "SET":
 		return s.literalMutation(ctx, wal.CommandSet, args)
@@ -363,10 +416,15 @@ func (s *Storage) ResetToSnapshot(ctx context.Context, dir string, lsn uint64, e
 	// Reset the WAL before publishing the snapshot. If we crash between the two, recovery falls back to the previous
 	// snapshot plus an empty WAL and re-syncs — safe. The reverse order would leave a high-LSN snapshot alongside old
 	// low-LSN segments, so the reopened writer appends a non-contiguous tail that recovery refuses.
-	if err := s.wal.Reset(ctx, lsn); err != nil {
-		return err
+	//
+	// A failure anywhere here fences the storage: the WAL, the snapshot on disk, and the engine may now disagree, and a
+	// restart (which recovers from disk and resyncs again) is the only path that reconciles them.
+	err := s.wal.Reset(ctx, lsn)
+	if err == nil {
+		err = wal.WriteSnapshot(ctx, dir, lsn, entrySource(entries))
 	}
-	if err := wal.WriteSnapshot(ctx, dir, lsn, entrySource(entries)); err != nil {
+	if err != nil {
+		s.Fence(fmt.Errorf("resync at LSN %d failed part-way: %w", lsn, err))
 		return err
 	}
 	s.engine.Replace(entries)

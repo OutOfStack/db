@@ -71,7 +71,8 @@ func TestInvalidListenAddressFailsEvenWithRemoteOptIn(t *testing.T) {
 
 func TestReplicationBoundsMustBePositive(t *testing.T) {
 	t.Parallel()
-	for _, field := range []string{"max_connections", "handshake_timeout", "idle_timeout"} {
+	for _, field := range []string{"max_connections", "handshake_timeout", "idle_timeout", "max_snapshot_size",
+		"max_snapshot_entries"} {
 		for _, role := range []string{config.RoleMaster, config.RoleStandby} {
 			cfg := config.DefaultServerConfig()
 			cfg.WAL.Enabled = true
@@ -85,6 +86,10 @@ func TestReplicationBoundsMustBePositive(t *testing.T) {
 				cfg.Replication.HandshakeTimeout = -1
 			case "idle_timeout":
 				cfg.Replication.IdleTimeout = 0
+			case "max_snapshot_size":
+				cfg.Replication.MaxSnapshotMB = 0
+			case "max_snapshot_entries":
+				cfg.Replication.MaxSnapshotEntries = -1
 			}
 			require.ErrorContains(t, cfg.Validate(), field)
 		}

@@ -22,7 +22,11 @@ import (
 //	tableLen uint16 | keyLen uint16 | valLen uint32 | table | key | value | crc32
 //
 // valLen == tombstoneMarker marks a delete (no value bytes follow). The crc32 covers the header and body, mirroring the
-// WAL, so a torn tail from a crash is detected and truncated on recovery.
+// WAL. Recovery truncates only a header cut short at the end of the newest segment: that is a shape only a crash
+// leaves, and no intact record can hide in fewer than eight bytes. Everything else — a checksum mismatch anywhere, or a
+// header whose lengths reach past the end of the file — is reported as corruption and left in place, because a flipped
+// byte in an acknowledged record's length field looks exactly like a torn write and truncating on it would delete every
+// intact record that follows.
 const (
 	headerSize      = 8
 	crcSize         = 4
@@ -57,12 +61,6 @@ type decoded struct {
 	recSize   int64
 }
 
-// valPosFor returns the absolute offset of a record's value bytes given the offset of the record start. The keydir
-// stores this so a cache miss reads only the value, not the whole record.
-func valPosFor(recPos int64, table, key string) int64 {
-	return recPos + headerSize + int64(len(table)+len(key))
-}
-
 // u16/u32 convert lengths callers have already bounded: Set rejects table/key over maxFieldLen and values over
 // maxValueLen, and lengths of decoded records come from on-disk uint16/uint32 fields. Centralized so the gosec overflow
 // suppression lives in one place.
@@ -93,7 +91,33 @@ func encodeRecord(table, key, value string, tombstone bool) []byte {
 	return binary.BigEndian.AppendUint32(buf, crc)
 }
 
-func decodeRecord(reader *bufio.Reader) (decoded, error) {
+// recordHeader is the parsed fixed-size prefix of a record. bodyLen is int64 because the on-disk lengths are read
+// before anything proves them sane: the caller bounds them against the bytes actually present before allocating.
+type recordHeader struct {
+	tableLen  int
+	keyLen    int
+	bodyLen   int64
+	tombstone bool
+}
+
+func parseHeader(hdr []byte) recordHeader {
+	h := recordHeader{
+		tableLen: int(binary.BigEndian.Uint16(hdr[0:2])),
+		keyLen:   int(binary.BigEndian.Uint16(hdr[2:4])),
+	}
+	valLen := binary.BigEndian.Uint32(hdr[4:8])
+	h.tombstone = valLen == tombstoneMarker
+	h.bodyLen = int64(h.tableLen + h.keyLen)
+	if !h.tombstone {
+		h.bodyLen += int64(valLen)
+	}
+	return h
+}
+
+// decodeRecord reads one record from a segment scan. remaining is how many bytes the segment still holds from the
+// record's start. A header whose lengths reach past it is corruption, reported before allocating for them: a corrupt
+// length field costs an error, never a multi-gigabyte buffer, and never the records behind it.
+func decodeRecord(reader *bufio.Reader, remaining int64) (decoded, error) {
 	hdr := make([]byte, headerSize)
 	n, err := io.ReadFull(reader, hdr)
 	if err != nil {
@@ -102,16 +126,12 @@ func decodeRecord(reader *bufio.Reader) (decoded, error) {
 		}
 		return decoded{}, fmt.Errorf("%w: header: %w", errPartial, err)
 	}
-	tableLen := int(binary.BigEndian.Uint16(hdr[0:2]))
-	keyLen := int(binary.BigEndian.Uint16(hdr[2:4]))
-	valLen := binary.BigEndian.Uint32(hdr[4:8])
-	tombstone := valLen == tombstoneMarker
-
-	bodyLen := tableLen + keyLen
-	if !tombstone {
-		bodyLen += int(valLen)
+	h := parseHeader(hdr)
+	if total := int64(headerSize+crcSize) + h.bodyLen; total > remaining {
+		return decoded{}, fmt.Errorf("%w: record claims %d bytes but the segment holds %d; if this is the tail a crash "+
+			"left, truncate the segment at the record's offset, otherwise restore it from backup", errChecksum, total, remaining)
 	}
-	body := make([]byte, bodyLen)
+	body := make([]byte, h.bodyLen)
 	if _, err = io.ReadFull(reader, body); err != nil {
 		return decoded{}, fmt.Errorf("%w: body: %w", errPartial, err)
 	}
@@ -119,22 +139,38 @@ func decodeRecord(reader *bufio.Reader) (decoded, error) {
 	if _, err = io.ReadFull(reader, crcBytes); err != nil {
 		return decoded{}, fmt.Errorf("%w: checksum: %w", errPartial, err)
 	}
+	return assembleRecord(h, hdr, body, crcBytes)
+}
 
+// decodeRecordBytes decodes a complete record read back by its keydir location. The buffer length is the size recorded
+// when the record was written or recovered, so any disagreement with the header is corruption, not a torn tail.
+func decodeRecordBytes(buf []byte) (decoded, error) {
+	if len(buf) < headerSize+crcSize {
+		return decoded{}, fmt.Errorf("%w: record shorter than its framing", errChecksum)
+	}
+	h := parseHeader(buf[:headerSize])
+	if int64(len(buf)) != int64(headerSize+crcSize)+h.bodyLen {
+		return decoded{}, fmt.Errorf("%w: header lengths disagree with the keydir", errChecksum)
+	}
+	body := buf[headerSize : headerSize+int(h.bodyLen)]
+	return assembleRecord(h, buf[:headerSize], body, buf[len(buf)-crcSize:])
+}
+
+func assembleRecord(h recordHeader, hdr, body, crcBytes []byte) (decoded, error) {
 	sum := crc32.NewIEEE()
 	_, _ = sum.Write(hdr)
 	_, _ = sum.Write(body)
 	if sum.Sum32() != binary.BigEndian.Uint32(crcBytes) {
 		return decoded{}, errChecksum
 	}
-
 	rec := decoded{
-		table:     string(body[:tableLen]),
-		key:       string(body[tableLen : tableLen+keyLen]),
-		tombstone: tombstone,
-		recSize:   int64(headerSize + bodyLen + crcSize),
+		table:     string(body[:h.tableLen]),
+		key:       string(body[h.tableLen : h.tableLen+h.keyLen]),
+		tombstone: h.tombstone,
+		recSize:   int64(headerSize+crcSize) + h.bodyLen,
 	}
-	if !tombstone {
-		rec.value = string(body[tableLen+keyLen:])
+	if !h.tombstone {
+		rec.value = string(body[h.tableLen+h.keyLen:])
 	}
 	return rec, nil
 }
@@ -151,6 +187,7 @@ type store struct {
 	dir         string
 	segmentSize int64
 	sync        wal.SyncPolicy
+	syncFile    func(*os.File) error // (*os.File).Sync; tests substitute a failing fsync
 
 	activeSeg uint32
 	readers   map[uint32]*os.File // open handles per segment (includes active)
@@ -159,6 +196,19 @@ type store struct {
 	pinMu stdsync.Mutex
 	pins  map[uint32]int
 	cond  *stdsync.Cond
+
+	// terminalErr latches the first failure after which the store can no longer promise durability: an fsync that
+	// failed, or a partial record it could not truncate away. It is guarded by the engine lock like the maps above.
+	terminalErr error
+}
+
+// fail latches err as the store's terminal error (first failure wins) and returns the latched error. Once set, every
+// later mutation is refused with it, Status reports the engine not ready, and close returns it.
+func (s *store) fail(err error) error {
+	if s.terminalErr == nil {
+		s.terminalErr = fmt.Errorf("%w: %w", ErrTerminal, err)
+	}
+	return s.terminalErr
 }
 
 func (s *store) active() *os.File { return s.readers[s.activeSeg] }
@@ -170,14 +220,18 @@ func (s *store) dataSize(seg uint32) int64 {
 	return max(0, s.sizes[seg]-int64(len(segmentHeader)))
 }
 
-func openStore(dir string, segmentSize int64, sync wal.SyncPolicy) (*store, error) {
+func openStore(dir string, segmentSize int64, sync wal.SyncPolicy, syncFile func(*os.File) error) (*store, error) {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
+	}
+	if syncFile == nil {
+		syncFile = (*os.File).Sync
 	}
 	s := &store{
 		dir:         dir,
 		segmentSize: segmentSize,
 		sync:        sync,
+		syncFile:    syncFile,
 		readers:     make(map[uint32]*os.File),
 		sizes:       make(map[uint32]int64),
 		pins:        make(map[uint32]int),
@@ -242,17 +296,17 @@ func (s *store) openNewActive(num uint32) error {
 		_ = file.Close()
 		return fmt.Errorf("write segment header: %w", err)
 	}
+	// A failed fsync here is the same terminal condition as one on the active segment: the store cannot tell what the
+	// disk holds. Syncing the file alone does not persist its directory entry, so a crash right after rotation could
+	// lose the whole segment along with writes that were already acknowledged; that sync latches for the same reason.
 	if s.sync != wal.SyncNo {
-		if err = file.Sync(); err != nil {
+		if err = s.syncFile(file); err != nil {
 			_ = file.Close()
-			return fmt.Errorf("sync segment header: %w", err)
+			return s.fail(fmt.Errorf("sync segment header: %w", err))
 		}
-	}
-	// Syncing the file alone does not persist its directory entry, so a crash right after rotation could lose the whole
-	// segment along with writes that were already acknowledged.
-	if s.sync != wal.SyncNo {
 		if err = wal.SyncDirectory(s.dir); err != nil {
-			return fmt.Errorf("sync data directory: %w", err)
+			_ = file.Close()
+			return s.fail(fmt.Errorf("sync data directory: %w", err))
 		}
 	}
 	s.activeSeg = num
@@ -279,9 +333,10 @@ func (s *store) append(rec []byte) (uint32, int64, error) {
 	}
 	if err != nil {
 		// Drop the partial record instead of counting it: leaving it in place would put later (acknowledged) appends behind
-		// damage that recovery truncates away.
+		// damage that recovery truncates away. If even that fails the segment holds bytes the store cannot account for, so
+		// it stops accepting writes rather than build on them.
 		if truncErr := s.active().Truncate(recPos); truncErr != nil {
-			return 0, 0, errors.Join(fmt.Errorf("write record: %w", err), truncErr)
+			return 0, 0, s.fail(errors.Join(fmt.Errorf("write record: %w", err), fmt.Errorf("drop partial record: %w", truncErr)))
 		}
 		return 0, 0, fmt.Errorf("write record: %w", err)
 	}
@@ -289,22 +344,33 @@ func (s *store) append(rec []byte) (uint32, int64, error) {
 	return s.activeSeg, recPos, nil
 }
 
-// readValue reads valLen bytes at valPos from segment seg.
-func (s *store) readValue(seg uint32, valPos int64, valLen uint32) (string, error) {
-	file, ok := s.pin(seg)
+// readValue reads the live value for table/key at its keydir location, verifying the record's checksum.
+func (s *store) readValue(table, key string, location loc) (string, error) {
+	file, ok := s.pin(location.seg)
 	if !ok {
-		return "", fmt.Errorf("segment %d not open", seg)
+		return "", fmt.Errorf("segment %d not open", location.seg)
 	}
-	defer s.unpin(seg)
-	return readPinnedValue(seg, file, valPos, valLen)
+	defer s.unpin(location.seg)
+	return readPinnedValue(file, table, key, location)
 }
 
-func readPinnedValue(seg uint32, file *os.File, valPos int64, valLen uint32) (string, error) {
-	buf := make([]byte, valLen)
-	if _, err := file.ReadAt(buf, valPos); err != nil {
-		return "", fmt.Errorf("read value from segment %d: %w", seg, err)
+// readPinnedValue reads a whole record back from a pinned segment and verifies it before returning the value: the
+// checksum must match and the record must be the live SET for table/key the keydir says is there. A cold read is the
+// only time a value's bytes are looked at after they were written, so this is where on-disk corruption surfaces. It
+// fails just this read — the keydir is untouched and every other key stays readable.
+func readPinnedValue(file *os.File, table, key string, location loc) (string, error) {
+	buf := make([]byte, location.recSize)
+	if _, err := file.ReadAt(buf, location.recPos); err != nil {
+		return "", fmt.Errorf("read record from segment %d at offset %d: %w", location.seg, location.recPos, err)
 	}
-	return string(buf), nil
+	rec, err := decodeRecordBytes(buf)
+	if err == nil && (rec.tombstone || rec.table != table || rec.key != key) {
+		err = fmt.Errorf("%w: record is not the live value the keydir points at", errChecksum)
+	}
+	if err != nil {
+		return "", fmt.Errorf("corrupt segment %d at offset %d: %w", location.seg, location.recPos, err)
+	}
+	return rec.value, nil
 }
 
 // scanBufSize buffers segment reads during recovery and compaction; the default bufio size would be one read syscall
@@ -312,8 +378,9 @@ func readPinnedValue(seg uint32, file *os.File, valPos int64, valLen uint32) (st
 const scanBufSize = 1 << 16
 
 // scanSegment decodes seg from the start, invoking fn for each record with its start offset, and records the segment's
-// real size. allowTornTail truncates a torn or checksum-invalid tail instead of failing — correct for the newest
-// segment at recovery (it is a crash tail), never for a sealed one.
+// real size. allowTornTail truncates a header cut short at the end of the file instead of failing — correct for the
+// newest segment at recovery (it is what a crash leaves), never for a sealed one. A checksum mismatch, including a
+// header that claims more bytes than the file holds, fails the scan either way: it is corruption, not a crash tail.
 func (s *store) scanSegment(seg uint32, allowTornTail bool, fn func(rec decoded, recPos int64)) error {
 	file, ok := s.pin(seg)
 	if !ok {
@@ -333,18 +400,23 @@ func (s *store) scanSegment(seg uint32, allowTornTail bool, fn func(rec decoded,
 // compaction is serialized by the compacting flag. Value reads are unaffected — they use ReadAt, which ignores the file
 // offset.
 func scanPinnedSegment(seg uint32, file *os.File, allowTornTail bool, fn func(rec decoded, recPos int64)) (int64, error) {
+	info, err := file.Stat()
+	if err != nil {
+		return 0, fmt.Errorf("stat segment %d: %w", seg, err)
+	}
+	size := info.Size()
 	offset := int64(len(segmentHeader))
-	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+	if _, err = file.Seek(offset, io.SeekStart); err != nil {
 		return 0, fmt.Errorf("seek segment %d: %w", seg, err)
 	}
 	reader := bufio.NewReaderSize(file, scanBufSize)
 	for {
-		rec, err := decodeRecord(reader)
+		rec, err := decodeRecord(reader, size-offset)
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
-			if allowTornTail && (errors.Is(err, errPartial) || errors.Is(err, errChecksum)) {
+			if allowTornTail && errors.Is(err, errPartial) {
 				if truncErr := file.Truncate(offset); truncErr != nil {
 					return 0, fmt.Errorf("truncate damaged tail: %w", truncErr)
 				}
@@ -416,8 +488,8 @@ func (s *store) syncActive() error {
 	if s.sync == wal.SyncNo || file == nil {
 		return nil
 	}
-	if err := file.Sync(); err != nil {
-		return fmt.Errorf("sync segment: %w", err)
+	if err := s.syncFile(file); err != nil {
+		return s.fail(fmt.Errorf("sync segment: %w", err))
 	}
 	return nil
 }
@@ -438,6 +510,10 @@ func (s *store) close() error {
 	}
 	defer s.pinMu.Unlock()
 	firstErr := s.syncActive()
+	if s.terminalErr != nil {
+		// The final close reports the latched failure so the process exit code reflects it, whatever this sync did.
+		firstErr = s.terminalErr
+	}
 	for _, file := range s.readers {
 		if err := file.Close(); err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("close segment: %w", err)

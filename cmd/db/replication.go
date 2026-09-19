@@ -3,11 +3,13 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"sync"
 
 	"github.com/OutOfStack/db/internal/config"
+	"github.com/OutOfStack/db/internal/datadir"
 	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/replication"
 	"github.com/OutOfStack/db/internal/storage"
@@ -25,18 +27,26 @@ type replicationRuntime struct {
 
 // setupReplication builds the replication runtime for the configured role. It returns nil for a standalone server.
 // Replication requires the WAL, which the config validation guarantees is enabled for master/standby roles.
+// unverifiedHistory, when non-empty, says why this master's recovered log cannot vouch for what standbys already hold;
+// the master then refuses to resume them incrementally.
 func setupReplication(
 	cfg *config.ServerConfig,
 	logger *slog.Logger,
 	store *storage.Storage,
 	writer *wal.Writer,
+	unverifiedHistory string,
 ) (*replicationRuntime, error) {
 	switch cfg.Replication.Role {
 	case config.RoleStandalone:
 		return nil, nil //nolint:nilnil // standalone has no replication runtime
 	case config.RoleMaster:
-		master, err := replication.NewMaster(cfg.Replication.ListenAddress, writer, cfg.WAL.DataDir, logger,
-			replicationOptions(cfg.Replication)...)
+		options := replicationOptions(cfg.Replication)
+		if unverifiedHistory != "" {
+			logger.Warn("Replication master cannot verify its history; standbys resuming from a retained LSN "+
+				"will be refused until reseeded", "reason", unverifiedHistory)
+			options = append(options, replication.WithUnverifiedHistory(unverifiedHistory))
+		}
+		master, err := replication.NewMaster(cfg.Replication.ListenAddress, writer, cfg.WAL.DataDir, logger, options...)
 		if err != nil {
 			return nil, err
 		}
@@ -72,7 +82,41 @@ func replicationOptions(cfg config.ServerReplicationConfig) []replication.Option
 		replication.WithMaxConnections(cfg.MaxConnections),
 		replication.WithHandshakeTimeout(cfg.HandshakeTimeout),
 		replication.WithIdleTimeout(cfg.IdleTimeout),
+		replication.WithMaxSnapshotBytes(cfg.MaxSnapshotMB << 20),
+		replication.WithMaxSnapshotEntries(cfg.MaxSnapshotEntries),
 	}
+}
+
+// unverifiedHistoryReason explains why a recovered master cannot vouch for its history, or returns "" when it can. A
+// torn tail is only a problem under a policy that acknowledges and streams records before they are fsynced: the lost
+// record may already sit on a standby. Under always it was never acknowledged, so nothing downstream can hold it.
+func unverifiedHistoryReason(cfg *config.ServerConfig, tailTruncated bool) string {
+	if !tailTruncated || cfg.WAL.Sync == wal.SyncAlways {
+		return ""
+	}
+	return fmt.Sprintf("recovery truncated a torn WAL tail under sync policy %q, so records a standby may already "+
+		"have applied are missing from this master", cfg.WAL.Sync)
+}
+
+// resolveUnverifiedHistory persists and returns the history warning across restarts; standalone nodes skip the marker.
+// clearMarker acknowledges that every standby was reseeded; a newly detected torn tail restores the marker.
+func resolveUnverifiedHistory(cfg *config.ServerConfig, tailTruncated, clearMarker bool) (string, error) {
+	if cfg.Replication.Role == config.RoleStandalone || !cfg.WAL.Enabled {
+		return "", nil
+	}
+	dir := cfg.WAL.DataDir
+	if clearMarker {
+		if err := datadir.ClearUnverifiedHistory(dir); err != nil {
+			return "", err
+		}
+	}
+	if reason := unverifiedHistoryReason(cfg, tailTruncated); reason != "" {
+		if err := datadir.MarkUnverifiedHistory(dir, reason); err != nil {
+			return "", err
+		}
+	}
+	reason, _, err := datadir.UnverifiedHistory(dir)
+	return reason, err
 }
 
 // startReplication launches replication background work. The returned channel closes when a master stops accepting
@@ -143,8 +187,17 @@ func (a *replicationAdmin) Promote(_ context.Context) (protocol.Reply, error) {
 	if a.role == config.RoleMaster {
 		return protocol.Reply{}, errors.New("server is already master")
 	}
+	// A terminal standby holds state that may not match any master's history; promoting it would make that state
+	// authoritative. Check before stopping replication, and again after: Stop cancels a resync in progress, and a
+	// resync cut off while replacing state is itself what makes the standby terminal.
+	if err := a.terminal(); err != nil {
+		return protocol.Reply{}, fmt.Errorf("refusing to promote: %w", err)
+	}
 	if a.standby != nil {
 		a.standby.Stop()
+	}
+	if err := a.terminal(); err != nil {
+		return protocol.Reply{}, fmt.Errorf("refusing to promote: %w", err)
 	}
 	a.store.Promote()
 	a.role = config.RoleMaster
@@ -187,7 +240,31 @@ func (a *replicationAdmin) close() error {
 	return nil
 }
 
-// Status returns role, applied LSN, lag, and connection state as a flat key/value array reply.
+// Keys of the REPLICATION STATUS reply that describe the terminal state.
+const (
+	statusKeyState = "state"
+	statusKeyError = "error"
+)
+
+// terminal reports a replication, storage, WAL, or engine failure that prevents service or safe promotion.
+// The caller holds a.mu.
+func (a *replicationAdmin) terminal() error {
+	if a.standby != nil {
+		if err := a.standby.Terminal(); err != nil {
+			return err
+		}
+	}
+	if err := a.store.Terminal(); err != nil {
+		return err
+	}
+	if status := a.store.Status(); !status.Ready && status.TerminalError != nil {
+		return status.TerminalError
+	}
+	return nil
+}
+
+// Status returns role, applied LSN, lag, connection state, and whether the node is terminal as a flat key/value array
+// reply. state is "ok" or "terminal"; error carries the terminal cause and is empty otherwise.
 func (a *replicationAdmin) Status(_ context.Context) (protocol.Reply, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -201,12 +278,18 @@ func (a *replicationAdmin) Status(_ context.Context) (protocol.Reply, error) {
 	} else {
 		applied = a.writer.LastLSN()
 	}
+	state, terminalMessage := "ok", ""
+	if err := a.terminal(); err != nil {
+		state, terminalMessage = "terminal", err.Error()
+	}
 
 	values := []string{
 		"role", roleName(a.role),
 		"applied_lsn", strconv.FormatUint(applied, 10),
 		"lag", strconv.FormatUint(lag, 10),
 		"connected", strconv.FormatBool(connected),
+		statusKeyState, state,
+		statusKeyError, terminalMessage,
 	}
 	return protocol.BulkStringArray(values), nil
 }

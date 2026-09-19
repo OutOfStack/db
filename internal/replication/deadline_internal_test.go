@@ -21,7 +21,7 @@ func TestMasterDropsBlockedStream(t *testing.T) {
 	_, err = writer.Append(t.Context(), wal.CommandSet, []string{"t", "k", strings.Repeat("v", 8192)})
 	require.NoError(t, err)
 	m := &Master{writer: writer, dir: dir, logger: slog.New(slog.DiscardHandler),
-		heartbeatInterval: time.Second, limits: defaultPeerLimits()}
+		heartbeatInterval: time.Second, limits: defaultSettings()}
 	m.limits.idleTimeout = 100 * time.Millisecond
 	server, peer := net.Pipe()
 	t.Cleanup(func() { _ = peer.Close() })
@@ -72,7 +72,7 @@ func TestStreamingReadDeadlineRenewsAfterProgress(t *testing.T) {
 
 func TestHandshakeDeadlineDoesNotRenewForTrickledBytes(t *testing.T) {
 	t.Parallel()
-	m := &Master{logger: slog.New(slog.DiscardHandler), limits: defaultPeerLimits()}
+	m := &Master{logger: slog.New(slog.DiscardHandler), limits: defaultSettings()}
 	m.limits.handshakeTimeout = 150 * time.Millisecond
 	server, peer := net.Pipe()
 	defer func() { _ = peer.Close() }()

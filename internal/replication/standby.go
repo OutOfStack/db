@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -22,13 +24,18 @@ type Applier interface {
 	ApplyReplicated(ctx context.Context, record wal.Record) error
 	// ResetToSnapshot replaces all state with a resync snapshot at lsn.
 	ResetToSnapshot(ctx context.Context, dir string, lsn uint64, entries []engine.Entry) error
+	// Fence puts the storage into a terminal state in which every command, reads included, is refused with err until
+	// the process restarts. A standby calls it when its state can no longer be trusted to match the master's.
+	Fence(err error)
 }
+
+// ErrTerminal marks a standby that has stopped replicating for good: its resync failed part-way, or its history
+// diverged from the master's. The standby fences its storage so it serves nothing, and the operator restarts it — after
+// a divergence, with an emptied data directory so it reseeds from the master.
+var ErrTerminal = errors.New("standby is in a terminal state")
 
 // defaultReconnectBackoff is the pause between replication reconnect attempts.
 const defaultReconnectBackoff = time.Second
-
-// maxSnapshotBytes bounds the snapshot blob so a malformed length cannot drive an unbounded read.
-const maxSnapshotBytes = 1 << 40
 
 // Standby connects to a master, persists the streamed WAL to its own log, and applies it to its engine in order. It
 // reconnects with backoff and tracks the applied LSN and lag so a promoted standby has a complete, contiguous log.
@@ -39,11 +46,14 @@ type Standby struct {
 	logger     *slog.Logger
 	backoff    time.Duration
 	dialer     *net.Dialer
-	limits     peerLimits
+	limits     settings
 
 	appliedLSN atomic.Uint64
 	masterLSN  atomic.Uint64
 	connected  atomic.Bool
+
+	terminalMu  sync.Mutex
+	terminalErr error
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -66,7 +76,7 @@ func NewStandby(
 	if backoff <= 0 {
 		backoff = defaultReconnectBackoff
 	}
-	limits := defaultPeerLimits()
+	limits := defaultSettings()
 	for _, option := range options {
 		option(&limits)
 	}
@@ -117,6 +127,25 @@ func (s *Standby) Lag() uint64 {
 // Connected reports whether the standby currently has a live master stream.
 func (s *Standby) Connected() bool { return s.connected.Load() }
 
+// Terminal returns the error that stopped replication for good, or nil while the standby is still replicating or
+// retrying. The error wraps ErrTerminal and says what the operator has to do.
+func (s *Standby) Terminal() error {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	return s.terminalErr
+}
+
+// fail enters the terminal state (the first cause wins), fences the storage, and returns the terminal error.
+func (s *Standby) fail(cause error) error {
+	s.terminalMu.Lock()
+	defer s.terminalMu.Unlock()
+	if s.terminalErr == nil {
+		s.terminalErr = fmt.Errorf("%w: %w", ErrTerminal, cause)
+		s.applier.Fence(s.terminalErr)
+	}
+	return s.terminalErr
+}
+
 func (s *Standby) run(ctx context.Context) {
 	defer close(s.done)
 	for {
@@ -125,6 +154,10 @@ func (s *Standby) run(ctx context.Context) {
 		}
 		err := s.replicateOnce(ctx)
 		if ctx.Err() != nil {
+			return
+		}
+		if terminal := s.Terminal(); terminal != nil {
+			s.logger.Error("Replication stopped; the standby serves nothing until it is restarted", "error", terminal)
 			return
 		}
 		if err != nil {
@@ -183,26 +216,38 @@ func (s *Standby) readFrame(ctx context.Context, reader *bufio.Reader) error {
 		if rErr != nil {
 			return fmt.Errorf("read heartbeat frame: %w", rErr)
 		}
-		s.observeMasterLSN(lsn)
-		return nil
+		return s.observeMasterLSN(lsn)
 	case frameSnapshot:
 		return s.applySnapshot(ctx, reader)
+	case frameError:
+		message, rErr := readErrorFrame(reader)
+		if rErr != nil {
+			return fmt.Errorf("read error frame: %w", rErr)
+		}
+		return s.fail(fmt.Errorf("master refused replication: %s", message))
 	default:
 		return fmt.Errorf("unknown replication frame %q", frameType)
 	}
 }
 
+// applyRecord persists and applies one streamed record. The master only ever sends the record after the one the
+// standby asked for, so a record at or below the applied LSN means the two logs no longer agree on what that LSN
+// holds; the standby fails closed rather than skip or re-apply it.
 func (s *Standby) applyRecord(ctx context.Context, record wal.Record) error {
+	applied := s.appliedLSN.Load()
+	if record.LSN <= applied {
+		return s.fail(divergence(fmt.Sprintf("master sent LSN %d but this standby has already applied %d", record.LSN, applied)))
+	}
 	if err := s.applier.ApplyReplicated(ctx, record); err != nil {
 		return fmt.Errorf("apply replicated record %d: %w", record.LSN, err)
 	}
 	s.appliedLSN.Store(record.LSN)
-	s.observeMasterLSN(record.LSN)
-	return nil
+	return s.observeMasterLSN(record.LSN)
 }
 
 // applySnapshot handles a resync: the standby's log was truncated past its position, so the master shipped a full
-// snapshot. The standby persists it, resets its WAL to the snapshot LSN, and replaces its engine state.
+// snapshot. The frame is bounded and verified in full before any state changes; once the standby starts replacing its
+// WAL, snapshot, and engine state, a failure leaves it terminal, since the three may no longer agree.
 func (s *Standby) applySnapshot(ctx context.Context, reader *bufio.Reader) error {
 	lsn, err := readUint64(reader)
 	if err != nil {
@@ -212,40 +257,55 @@ func (s *Standby) applySnapshot(ctx context.Context, reader *bufio.Reader) error
 	if err != nil {
 		return fmt.Errorf("read snapshot length: %w", err)
 	}
-	if length > maxSnapshotBytes {
-		return fmt.Errorf("snapshot length %d exceeds maximum %d", length, maxSnapshotBytes)
+	if length > uint64(s.limits.maxSnapshotBytes) { // #nosec G115 -- maxSnapshotBytes is positive
+		err = fmt.Errorf("snapshot of %d bytes exceeds replication.max_snapshot_size (%d bytes)", length, s.limits.maxSnapshotBytes)
+		s.logger.Error("Resync refused: snapshot exceeds the configured bound", "error", err)
+		return err
 	}
 
-	entries, err := parseSnapshot(reader, lsn, int64(length)) // #nosec G115 -- length bounded by maxSnapshotBytes above
+	entries, err := s.parseSnapshot(reader, lsn, int64(length)) // #nosec G115 -- length bounded above
 	if err != nil {
+		s.logger.Error("Resync snapshot rejected before any state changed", "lsn", lsn, "error", err)
 		return fmt.Errorf("parse snapshot: %w", err)
 	}
 
 	if err = s.applier.ResetToSnapshot(ctx, s.dir, lsn, entries); err != nil {
-		return fmt.Errorf("apply resync snapshot: %w", err)
+		return s.fail(fmt.Errorf("resync at LSN %d failed after the standby began replacing its state: %w; "+
+			"restart the standby to reseed from the master", lsn, err))
 	}
 	s.appliedLSN.Store(lsn)
-	s.observeMasterLSN(lsn)
 	s.logger.Info("Applied resync snapshot", "lsn", lsn, "entries", len(entries))
-	return nil
+	return s.observeMasterLSN(lsn)
 }
 
-func (s *Standby) observeMasterLSN(lsn uint64) {
+// observeMasterLSN records the master's latest LSN for lag reporting. A master behind this standby has a shorter
+// history than the one the standby applied, which no amount of streaming can reconcile.
+func (s *Standby) observeMasterLSN(lsn uint64) error {
+	if applied := s.appliedLSN.Load(); lsn < applied {
+		return s.fail(divergence(fmt.Sprintf("master LSN %d is behind this standby's applied LSN %d", lsn, applied)))
+	}
 	for {
 		current := s.masterLSN.Load()
 		if lsn <= current {
-			return
+			return nil
 		}
 		if s.masterLSN.CompareAndSwap(current, lsn) {
-			return
+			return nil
 		}
 	}
 }
 
-func parseSnapshot(reader *bufio.Reader, lsn uint64, length int64) ([]engine.Entry, error) {
-	limited := bufio.NewReader(io.LimitReader(reader, length))
+func divergence(detail string) error {
+	return fmt.Errorf("%s: histories diverged; remove this standby's data directory and restart it to reseed from the master",
+		detail)
+}
+
+func (s *Standby) parseSnapshot(reader *bufio.Reader, lsn uint64, length int64) ([]engine.Entry, error) {
 	var entries []engine.Entry
-	err := wal.ReadSnapshot(limited, lsn, func(table, key, value string) error {
+	err := wal.ReadSnapshot(reader, lsn, length, func(table, key, value string) error {
+		if len(entries) >= s.limits.maxSnapshotEntries {
+			return fmt.Errorf("snapshot exceeds replication.max_snapshot_entries (%d)", s.limits.maxSnapshotEntries)
+		}
 		entries = append(entries, engine.Entry{Table: table, Key: key, Value: value})
 		return nil
 	})

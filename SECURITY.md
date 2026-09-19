@@ -30,6 +30,14 @@ The replication master caps concurrent connections, including handshakes, at `re
 100). Excess connections are closed. `replication.handshake_timeout` (default 10s) bounds the entire incoming handshake,
 so trickling bytes cannot extend it. It also bounds standby dialing and handshake writes.
 
+A standby bounds what a master can make it hold: a resync snapshot is refused before a byte is read when its declared
+length exceeds `replication.max_snapshot_size` (default 4 GiB), and its load stops at `replication.max_snapshot_entries`
+(default 10,000,000). The snapshot's byte count and trailing checksum are verified before any state changes. A master
+whose stream disagrees with the standby's applied history makes the standby terminal: it serves nothing until an
+operator restarts (and, where the message says so, reseeds) it. Neither side authenticates the other; a peer that can
+reach the replication port can still make a standby terminal by design, which is why the port must stay on a trusted
+network.
+
 `replication.idle_timeout` (default 1m) bounds each socket read/write during streaming, including snapshots. Progress
 renews these deadlines so large snapshots can transfer longer than the timeout. A blocked master write drops that
 standby; a standby reconnects after a stalled or silent master. Startup rejects standby timeouts of 1s or less, matching

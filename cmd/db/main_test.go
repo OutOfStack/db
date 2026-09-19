@@ -197,13 +197,13 @@ func TestPromoteServesReplication(t *testing.T) {
 	cfg.Replication.ReconnectBackoff = time.Hour
 	logger := slog.New(slog.DiscardHandler)
 
-	dbEngine, writer, _, err := recoverPersistence(cfg, logger)
+	dbEngine, writer, _, _, err := recoverPersistence(cfg, logger)
 	if err != nil {
 		t.Fatalf("recoverPersistence() error = %v", err)
 	}
 	defer func() { _ = writer.Close() }()
 	store := storage.New(dbEngine, storage.WithWAL(writer), storage.WithReadOnly(true))
-	repl, err := setupReplication(cfg, logger, store, writer)
+	repl, err := setupReplication(cfg, logger, store, writer, "")
 	if err != nil {
 		t.Fatalf("setupReplication() error = %v", err)
 	}
@@ -252,7 +252,7 @@ func TestRecoverPersistenceSnapshotAndWALTail(t *testing.T) {
 	cfg.WAL.SnapshotInterval = time.Minute
 	logger := slog.New(slog.DiscardHandler)
 
-	dbEngine, writer, _, err := recoverPersistence(cfg, logger)
+	dbEngine, writer, _, _, err := recoverPersistence(cfg, logger)
 	if err != nil {
 		t.Fatalf("initial recoverPersistence() error = %v", err)
 	}
@@ -273,7 +273,7 @@ func TestRecoverPersistenceSnapshotAndWALTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recovered, recoveredWriter, snapshotLSN, err := recoverPersistence(cfg, logger)
+	recovered, recoveredWriter, snapshotLSN, _, err := recoverPersistence(cfg, logger)
 	if err != nil {
 		t.Fatalf("recoverPersistence() error = %v", err)
 	}
@@ -304,7 +304,7 @@ func TestRecoverPersistenceTypedValues(t *testing.T) {
 	cfg.WAL.SnapshotInterval = time.Minute
 	logger := slog.New(slog.DiscardHandler)
 
-	dbEngine, writer, _, err := recoverPersistence(cfg, logger)
+	dbEngine, writer, _, _, err := recoverPersistence(cfg, logger)
 	if err != nil {
 		t.Fatalf("initial recoverPersistence() error = %v", err)
 	}
@@ -340,7 +340,7 @@ func TestRecoverPersistenceTypedValues(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	recovered, recoveredWriter, _, err := recoverPersistence(cfg, logger)
+	recovered, recoveredWriter, _, _, err := recoverPersistence(cfg, logger)
 	if err != nil {
 		t.Fatalf("recoverPersistence() error = %v", err)
 	}

@@ -28,7 +28,7 @@ type Master struct {
 	logger   *slog.Logger
 
 	heartbeatInterval time.Duration
-	limits            peerLimits
+	limits            settings
 	mu                sync.Mutex
 	connections       map[net.Conn]struct{}
 	closed            bool
@@ -46,7 +46,7 @@ func NewMaster(listenAddr string, writer *wal.Writer, dir string, logger *slog.L
 	if err != nil {
 		return nil, fmt.Errorf("start replication listener: %w", err)
 	}
-	limits := defaultPeerLimits()
+	limits := defaultSettings()
 	for _, option := range options {
 		option(&limits)
 	}
@@ -144,10 +144,51 @@ func (m *Master) handleConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	writer := bufio.NewWriter(deadlineConn{Conn: conn, timeout: m.limits.idleTimeout})
+	refusal, err := m.refusal(requestedLSN)
+	if err != nil {
+		m.logger.Error("Replication history check failed", "remote", conn.RemoteAddr(), "error", err)
+		return
+	}
+	if refusal != "" {
+		m.logger.Warn("Refusing to serve standby; it must be reseeded", "remote", conn.RemoteAddr(),
+			"from_lsn", requestedLSN, "reason", refusal)
+		if err = writeErrorFrame(writer, refusal); err == nil {
+			err = writer.Flush()
+		}
+		if err != nil {
+			m.logger.Debug("Replication refusal not delivered", "remote", conn.RemoteAddr(), "error", err)
+		}
+		return
+	}
 	if err = m.stream(ctx, writer, requestedLSN); err != nil && !errors.Is(err, context.Canceled) {
 		m.logger.Info("Replication stream ended", "remote", conn.RemoteAddr())
 		m.logger.Debug("Replication stream error details", "error", err)
 	}
+}
+
+// refusal decides whether a standby resuming from requestedLSN can be served at all, returning the message to send it
+// when not. Two histories are irreconcilable without a reseed: a standby ahead of this master holds records the master
+// never wrote (or lost), and a master that recovered onto an unverified history cannot vouch for the records a standby
+// already applied. In the second case a standby that starts from nothing, or that is far enough behind to be reseeded
+// from a snapshot anyway, is still served: both paths replace its state with the master's.
+func (m *Master) refusal(requestedLSN uint64) (string, error) {
+	last := m.writer.LastLSN()
+	if requestedLSN > last {
+		return fmt.Sprintf("standby LSN %d is ahead of master LSN %d: histories diverged; "+
+			"remove the standby's data directory and restart it to reseed from this master", requestedLSN, last), nil
+	}
+	if m.limits.unverifiedHistory == "" || requestedLSN == 0 {
+		return "", nil
+	}
+	oldest, err := wal.OldestRecordLSN(m.dir, last+1)
+	if err != nil {
+		return "", err
+	}
+	if requestedLSN+1 < oldest {
+		return "", nil // the standby will be reseeded from a snapshot, which replaces its history wholesale
+	}
+	return fmt.Sprintf("master cannot verify standby history: %s; "+
+		"remove the standby's data directory and restart it to reseed from this master", m.limits.unverifiedHistory), nil
 }
 
 func (m *Master) stream(ctx context.Context, w *bufio.Writer, requestedLSN uint64) error {

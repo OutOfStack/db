@@ -39,6 +39,10 @@ replication:
   max_connections: 100           # master: includes incomplete handshakes
   handshake_timeout: 10s         # master: whole handshake; standby: dial and handshake write
   idle_timeout: 1m               # each streaming socket read/write; standby startup requires greater than 1s
+  # standby: bounds on a resync snapshot. The declared size (MiB) is checked before a byte is read; the entry count
+  # while the verified snapshot is loaded. Raise them deliberately when the master's dataset outgrows them.
+  max_snapshot_size: 4096
+  max_snapshot_entries: 10000000
   # standby: permit the PROMOTE command over the client port. Off by default — promotion changes which node accepts
   # writes, so it has to be an explicit operator decision.
   allow_remote_promote: false

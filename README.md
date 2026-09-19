@@ -52,6 +52,21 @@ Preview caveats:
 - There is no automatic write failover. If the master fails, writes fail until an operator isolates the old master,
   promotes a standby with `PROMOTE` (requires `replication.allow_remote_promote`), and points clients at the new master
 - A pool routes writes to its single configured master; configs listing more than one master are rejected
+- Preview failures are contained, not repaired. A standby whose resync fails part-way, or whose history diverges from
+  the master's, enters a terminal state: it refuses every command, stops replicating, refuses `PROMOTE`, and
+  `REPLICATION STATUS` reports `state terminal` with the cause. Restart it, after emptying its data directory when the
+  message says to reseed. A master that recovered from a torn WAL tail under `everysec` or `no` records that in its
+  data directory and refuses, across restarts, to resume any standby from a retained LSN, because that standby may
+  hold the record the master lost. Reseed every standby, then restart the master once with
+  `-clear-unverified-history`. Divergence is otherwise detected only by LSN comparison, so a master that rolls back
+  and then advances past a standby's LSN before it reconnects is not detected — the replication GA timeline protocol
+  closes that gap
+- The tiered engine latches its first fsync failure: later writes are refused with `ERR tiered engine is in a
+  terminal state`, reads continue, and the process exits nonzero on shutdown. A checksum mismatch in a segment is
+  corruption — a cold read of that key fails while other keys stay readable, and a restart refuses to start until the
+  file is restored. Only a record header cut short at the end of the newest segment is truncated as a crash tail; a
+  header whose lengths reach past the end of the file is reported with its offset and left in place, since a crash
+  and a corrupt length look the same there and truncating would delete every intact record behind it
 
 ## Commands
 
@@ -246,6 +261,10 @@ with `wal.enabled` or replication — the server refuses that combination at sta
 - **replication.idle_timeout**: Timeout for each streaming socket read/write, including snapshot transfers (default `1m`).
   Standby configuration requires a value greater than `1s`, the maximum master heartbeat interval; silent masters
   trigger a reconnect. Leave margin for scheduling and network delays (the default is recommended)
+- **replication.max_snapshot_size**: Standby: largest resync snapshot accepted, in MiB, checked against the declared
+  frame length before any of it is read (default `4096`)
+- **replication.max_snapshot_entries**: Standby: most entries a resync snapshot may hold; the load stops at the cap
+  before the next entry is kept in memory (default `10000000`)
 - **network.address**: Server listening address (default `127.0.0.1:3223`)
 - **network.allow_remote**: Allow non-loopback client and replication listen addresses (default `false`). Wildcard binds,
   private/public IPs, and hostnames (including `localhost`) require this opt-in; use literal `127.0.0.1` or `::1` locally
@@ -300,6 +319,8 @@ A non-empty `-config` path is exact and required: relative and absolute paths ar
 file aborts startup instead of falling back to defaults. Starting the ephemeral in-memory mode over recognized WAL,
 snapshot, or tiered files is also refused. To acknowledge that data will be ignored for one launch, pass
 `-allow-ephemeral-over-data`; this flag never permits opening one durable engine's files with the other engine.
+`-clear-unverified-history` removes the marker a replication master leaves after recovering from a torn WAL tail (see
+the preview caveats); pass it only after every standby has been reseeded.
 
 WAL recovery truncates only an incomplete record at EOF in the final segment. A checksum mismatch, including in the
 last record, aborts startup with the segment path and byte offset and leaves the file unchanged. Restore corrupted

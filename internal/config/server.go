@@ -57,6 +57,11 @@ type ServerReplicationConfig struct {
 	MaxConnections   int           `yaml:"max_connections"`
 	HandshakeTimeout time.Duration `yaml:"handshake_timeout"`
 	IdleTimeout      time.Duration `yaml:"idle_timeout"`
+	// MaxSnapshotMB and MaxSnapshotEntries bound a resync snapshot a standby accepts: the declared size in MiB, checked
+	// before a byte is read, and the number of entries loaded into memory. A master whose dataset outgrows them cannot
+	// reseed standbys until they are raised.
+	MaxSnapshotMB      int64 `yaml:"max_snapshot_size"`
+	MaxSnapshotEntries int   `yaml:"max_snapshot_entries"`
 	// AllowRemotePromote permits the PROMOTE command over the client port. Off by default: promotion changes which node
 	// accepts writes, so it has to be an explicit operator decision.
 	AllowRemotePromote bool `yaml:"allow_remote_promote"`
@@ -124,11 +129,13 @@ func DefaultServerConfig() *ServerConfig {
 			SnapshotInterval: 5 * time.Minute,
 		},
 		Replication: ServerReplicationConfig{
-			Role:             RoleStandalone,
-			ReconnectBackoff: time.Second,
-			MaxConnections:   100,
-			HandshakeTimeout: 10 * time.Second,
-			IdleTimeout:      time.Minute,
+			Role:               RoleStandalone,
+			ReconnectBackoff:   time.Second,
+			MaxConnections:     100,
+			HandshakeTimeout:   10 * time.Second,
+			IdleTimeout:        time.Minute,
+			MaxSnapshotMB:      replication.DefaultMaxSnapshotBytes >> 20,
+			MaxSnapshotEntries: replication.DefaultMaxSnapshotEntries,
 		},
 		Network: ServerNetworkConfig{
 			Address:          defaultAddress,
@@ -360,6 +367,19 @@ func (r *ServerReplicationConfig) validate(walEnabled, allowRemote bool) error {
 	if r.Role == RoleStandby && r.IdleTimeout <= replication.MaxHeartbeatInterval {
 		return fmt.Errorf("replication idle_timeout must exceed %s for standby (maximum master heartbeat interval)",
 			replication.MaxHeartbeatInterval)
+	}
+	return r.validateSnapshotBounds()
+}
+
+func (r *ServerReplicationConfig) validateSnapshotBounds() error {
+	if r.MaxSnapshotMB <= 0 {
+		return errors.New("replication max_snapshot_size must be positive")
+	}
+	if r.MaxSnapshotMB > maxMB {
+		return errors.New("replication max_snapshot_size overflows bytes")
+	}
+	if r.MaxSnapshotEntries <= 0 {
+		return errors.New("replication max_snapshot_entries must be positive")
 	}
 	return nil
 }

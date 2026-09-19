@@ -33,10 +33,12 @@ func main() {
 // the log file) runs before os.Exit.
 func execute() int {
 	var configPath string
-	var allowEphemeralOverData bool
+	var options startupOptions
 	flag.StringVar(&configPath, "config", "", "Path to configuration file")
-	flag.BoolVar(&allowEphemeralOverData, "allow-ephemeral-over-data", false,
+	flag.BoolVar(&options.allowEphemeralOverData, "allow-ephemeral-over-data", false,
 		"Allow ephemeral startup when durable database files already exist")
+	flag.BoolVar(&options.clearUnverifiedHistory, "clear-unverified-history", false,
+		"Remove the replication unverified-history marker; use only after every standby has been reseeded")
 	flag.Parse()
 
 	cfg, err := config.LoadServerConfig(configPath)
@@ -49,7 +51,7 @@ func execute() int {
 		log.Printf("Failed to configure logging: %v\n", err)
 		return 1
 	}
-	runErr := run(cfg, logger, allowEphemeralOverData)
+	runErr := run(cfg, logger, options)
 	if runErr != nil {
 		logger.Error("Server stopped", "error", runErr)
 	}
@@ -88,15 +90,25 @@ func newLogger(cfg config.ServerLoggingConfig) (*slog.Logger, func() error, erro
 	return slog.New(slog.NewJSONHandler(file, opts)), file.Close, nil
 }
 
-func run(cfg *config.ServerConfig, logger *slog.Logger, allowEphemeralOverData bool) (err error) {
+// startupOptions are the one-launch operator acknowledgements passed on the command line.
+type startupOptions struct {
+	allowEphemeralOverData bool
+	clearUnverifiedHistory bool
+}
+
+func run(cfg *config.ServerConfig, logger *slog.Logger, startup startupOptions) (err error) {
 	logSupportBoundary(cfg, logger)
-	lock, err := prepareDataDir(cfg, allowEphemeralOverData)
+	lock, err := prepareDataDir(cfg, startup.allowEphemeralOverData)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, lock.Close()) }()
 
-	dbEngine, walWriter, snapshotLSN, err := buildEngine(cfg, logger)
+	dbEngine, walWriter, snapshotLSN, tailTruncated, err := buildEngine(cfg, logger)
+	if err != nil {
+		return err
+	}
+	unverifiedHistory, err := resolveUnverifiedHistory(cfg, tailTruncated, startup.clearUnverifiedHistory)
 	if err != nil {
 		return err
 	}
@@ -118,7 +130,7 @@ func run(cfg *config.ServerConfig, logger *slog.Logger, allowEphemeralOverData b
 	}
 	store := storage.New(dbEngine, options...)
 
-	repl, err := setupReplication(cfg, logger, store, walWriter)
+	repl, err := setupReplication(cfg, logger, store, walWriter, unverifiedHistory)
 	if err != nil {
 		return err
 	}
@@ -193,18 +205,18 @@ func logSupportBoundary(cfg *config.ServerConfig, logger *slog.Logger) {
 }
 
 // buildEngine constructs the configured storage engine. The tiered engine keeps its own durable segment store (no WAL);
-// the in-memory engine recovers from the WAL/snapshot when persistence is enabled, and so returns a writer and the LSN
-// to resume from.
+// the in-memory engine recovers from the WAL/snapshot when persistence is enabled, and so returns a writer, the LSN to
+// resume from, and whether recovery had to truncate a torn tail.
 func buildEngine( //nolint:ireturn // returns the configured engine (in-memory or tiered) behind storage.Engine
 	cfg *config.ServerConfig,
 	logger *slog.Logger,
-) (storage.Engine, *wal.Writer, uint64, error) {
+) (storage.Engine, *wal.Writer, uint64, bool, error) {
 	if cfg.Engine.Type == engine.TypeTiered {
 		tieredEngine, err := tiered.Open(tieredConfig(cfg.Engine), logger)
 		if err != nil {
-			return nil, nil, 0, fmt.Errorf("open tiered engine: %w", err)
+			return nil, nil, 0, false, fmt.Errorf("open tiered engine: %w", err)
 		}
-		return tieredEngine, nil, 0, nil
+		return tieredEngine, nil, 0, false, nil
 	}
 	return recoverPersistence(cfg, logger)
 }
@@ -222,13 +234,16 @@ func tieredConfig(cfg config.ServerEngineConfig) tiered.Config {
 	}
 }
 
+// recoverPersistence loads the newest verified snapshot and replays the WAL tail. The returned bool reports whether
+// the reader truncated a torn record off the newest segment, which a replication master needs to know (see
+// unverifiedHistoryReason).
 func recoverPersistence(
 	cfg *config.ServerConfig,
 	logger *slog.Logger,
-) (*engine.Engine, *wal.Writer, uint64, error) {
+) (*engine.Engine, *wal.Writer, uint64, bool, error) {
 	dbEngine := engine.New()
 	if !cfg.WAL.Enabled {
-		return dbEngine, nil, 0, nil
+		return dbEngine, nil, 0, false, nil
 	}
 
 	var entries []engine.Entry
@@ -237,15 +252,16 @@ func recoverPersistence(
 		return nil
 	})
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("load snapshot: %w", err)
+		return nil, nil, 0, false, fmt.Errorf("load snapshot: %w", err)
 	}
 	dbEngine.Load(context.Background(), entries)
 
-	lastLSN, err := wal.NewReader(cfg.WAL.DataDir, logger).Replay(snapshotLSN, func(record wal.Record) error {
+	reader := wal.NewReader(cfg.WAL.DataDir, logger)
+	lastLSN, err := reader.Replay(snapshotLSN, func(record wal.Record) error {
 		return storage.ApplyReplay(context.Background(), dbEngine, record.Command, record.Args)
 	})
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("replay WAL: %w", err)
+		return nil, nil, 0, false, fmt.Errorf("replay WAL: %w", err)
 	}
 	writer, err := wal.OpenWriter(wal.WriterConfig{
 		Dir:         cfg.WAL.DataDir,
@@ -253,10 +269,11 @@ func recoverPersistence(
 		SegmentSize: cfg.WAL.SegmentSizeMB << 20,
 	}, lastLSN)
 	if err != nil {
-		return nil, nil, 0, fmt.Errorf("open WAL: %w", err)
+		return nil, nil, 0, false, fmt.Errorf("open WAL: %w", err)
 	}
-	logger.Info("Persistence recovered", "snapshot_lsn", snapshotLSN, "last_lsn", lastLSN)
-	return dbEngine, writer, snapshotLSN, nil
+	logger.Info("Persistence recovered", "snapshot_lsn", snapshotLSN, "last_lsn", lastLSN,
+		"tail_truncated", reader.TruncatedTail())
+	return dbEngine, writer, snapshotLSN, reader.TruncatedTail(), nil
 }
 
 func serve(

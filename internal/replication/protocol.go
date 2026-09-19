@@ -11,10 +11,13 @@
 // prefixed by a one-byte frame type:
 //
 //	'R' record    — a WAL record (wal.EncodeRecord bytes; self-delimiting)
-//	'S' snapshot  — resync payload: 8-byte LSN, 8-byte length, then that many
-//	                bytes of protocol-encoded SET commands (a snapshot blob)
+//	'S' snapshot  — resync payload: 8-byte LSN, 8-byte length, then exactly that
+//	                many bytes of a snapshot file, trailing checksum included
 //	'H' heartbeat — 8-byte master LastLSN, sent while idle so the standby can
 //	                report replication lag even when no records are flowing
+//	'E' error     — 2-byte length and a message: the master refuses to serve this
+//	                standby (its history cannot be reconciled) and closes the
+//	                connection; the standby stops replicating and must be reseeded
 package replication
 
 import (
@@ -36,9 +39,12 @@ const (
 	frameRecord    byte = 'R'
 	frameSnapshot  byte = 'S'
 	frameHeartbeat byte = 'H'
+	frameError     byte = 'E'
 
 	// handshakeMaxSize bounds the REPLICATE handshake command decode.
 	handshakeMaxSize = 128
+	// errorFrameMaxSize bounds an error frame's message so a peer cannot make the standby buffer an arbitrary amount.
+	errorFrameMaxSize = 1024
 )
 
 // writeHandshake sends the REPLICATE <lsn> handshake to the master.
@@ -80,6 +86,36 @@ func writeHeartbeatFrame(w io.Writer, lastLSN uint64) error {
 	binary.BigEndian.PutUint64(buf[1:], lastLSN)
 	_, err := w.Write(buf)
 	return err
+}
+
+// writeErrorFrame tells a standby why the master will not serve it. The message is truncated to errorFrameMaxSize.
+func writeErrorFrame(w io.Writer, message string) error {
+	if len(message) > errorFrameMaxSize {
+		message = message[:errorFrameMaxSize]
+	}
+	buf := make([]byte, 1+2, 1+2+len(message))
+	buf[0] = frameError
+	binary.BigEndian.PutUint16(buf[1:3], uint16(len(message))) // #nosec G115 -- bounded by errorFrameMaxSize above
+	buf = append(buf, message...)
+	_, err := w.Write(buf)
+	return err
+}
+
+// readErrorFrame reads an error frame's message after its type byte.
+func readErrorFrame(r *bufio.Reader) (string, error) {
+	lengthBytes := make([]byte, 2)
+	if _, err := io.ReadFull(r, lengthBytes); err != nil {
+		return "", err
+	}
+	length := binary.BigEndian.Uint16(lengthBytes)
+	if length > errorFrameMaxSize {
+		return "", fmt.Errorf("error frame length %d exceeds maximum %d", length, errorFrameMaxSize)
+	}
+	message := make([]byte, length)
+	if _, err := io.ReadFull(r, message); err != nil {
+		return "", err
+	}
+	return string(message), nil
 }
 
 // writeSnapshotFrame streams a snapshot blob of the given byte length. The body is copied from src (typically a

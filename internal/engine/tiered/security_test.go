@@ -33,7 +33,7 @@ func TestRangeReadFailureRedactsIdentifiers(t *testing.T) {
 	require.Contains(t, out, "level=ERROR msg=\"Range read failed\"")
 	require.Contains(t, out, "table_bytes=13")
 	require.Contains(t, out, "key_bytes=11")
-	require.Contains(t, out, "read value from segment")
+	require.Contains(t, out, "read record from segment")
 	require.NotContains(t, out, table)
 	require.NotContains(t, out, key)
 	require.NotContains(t, out, "private-value")

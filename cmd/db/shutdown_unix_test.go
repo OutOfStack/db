@@ -70,7 +70,7 @@ func TestSIGTERMPreservesAcknowledgedWrite(t *testing.T) {
 	}
 
 	cfg := shutdownTestConfig(address, dataDir)
-	dbEngine, writer, _, err := recoverPersistence(cfg, slog.New(slog.DiscardHandler))
+	dbEngine, writer, _, _, err := recoverPersistence(cfg, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 	defer func() { require.NoError(t, writer.Close()) }()
 	value, err := dbEngine.Get(t.Context(), "users", "name")
@@ -84,7 +84,7 @@ func TestShutdownHelperProcess(t *testing.T) {
 		return
 	}
 	cfg := shutdownTestConfig(address, os.Getenv(shutdownHelperDataDir))
-	require.NoError(t, run(cfg, slog.New(slog.DiscardHandler), false))
+	require.NoError(t, run(cfg, slog.New(slog.DiscardHandler), startupOptions{}))
 }
 
 func shutdownTestConfig(address, dataDir string) *config.ServerConfig {
