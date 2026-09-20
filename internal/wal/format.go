@@ -8,12 +8,19 @@ import (
 	"os"
 )
 
-// Format headers identify the files this package writes; the trailing byte is the format version. A non-empty file that
-// does not carry the current header is rejected at open rather than parsed: misreading one would look like a torn tail
-// and get truncated away.
+// Format versions of the files this package writes. A build reads only its own version: a file carrying any other one
+// is refused at open (see RequireHeader), so these are bumped only alongside a migration path.
 const (
-	walHeader      = "DBWAL\x00\x02"
-	snapshotHeader = "DBSNP\x00\x03"
+	WALFormatVersion      = 2
+	SnapshotFormatVersion = 3
+)
+
+// Format headers identify the files this package writes; the trailing byte is the format version above. A non-empty
+// file that does not carry the current header is rejected at open rather than parsed: misreading one would look like a
+// torn tail and get truncated away.
+const (
+	walHeader      = "DBWAL\x00" + string(rune(WALFormatVersion))
+	snapshotHeader = "DBSNP\x00" + string(rune(SnapshotFormatVersion))
 )
 
 // ErrUnsupportedFormat is returned for a file written in a format this build does not read.

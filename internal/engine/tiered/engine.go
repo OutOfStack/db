@@ -10,7 +10,6 @@ package tiered
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -21,18 +20,20 @@ import (
 	"time"
 
 	"github.com/OutOfStack/db/internal/engine"
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/wal"
 )
 
 // ErrStorageFull is returned by Set when the live dataset would exceed the configured storage limit. It surfaces to
-// clients as "ERR storage full".
-var ErrStorageFull = errors.New("storage full")
+// clients as "TOOLARGE storage full".
+var ErrStorageFull = protocol.NewError(protocol.CodeTooLarge, "storage full")
 
 // ErrTerminal wraps the first failure after which the engine can no longer promise that acknowledged writes are
 // durable — an fsync that failed, or a partial record it could not drop. The engine keeps serving reads of what it
 // already holds but refuses every later mutation with this error, reports itself not ready, and returns it from
 // Close; a restart is the only way out, and recovery then rebuilds the keydir from whatever reached disk.
-var ErrTerminal = errors.New("tiered engine is in a terminal state after an unrecoverable failure")
+var ErrTerminal = protocol.NewError(protocol.CodeUnavailable,
+	"tiered engine is in a terminal state after an unrecoverable failure")
 
 // Config configures a tiered engine.
 type Config struct {

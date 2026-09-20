@@ -8,8 +8,22 @@
 //	val, err := c.Get(ctx, "users", "name")
 //	err = c.Del(ctx, "users", "name")
 //
-// Values are typed. A value is sent as a literal: 42 is an int, 42.5 a float, true a bool, [1,2] an array, {"a":1} a
-// map, "42" and any other text a string. Values come back in a human-readable form, and Type reports what a key holds.
+// Values are typed. A value is sent as a literal, parsed server-side: 42 is an int, 42.5 a float, true a bool, [1,2] an
+// array, {"a":1} a map, "42" and any other text a string. Set does not force a string — Set(ctx, t, k, "42") stores the
+// int 42, and quoting it as "\"42\"" stores the string. Values come back in a human-readable form, and Type reports what
+// a key holds.
+//
+// # Errors
+//
+// Three conditions have exported sentinels, because callers usually act on them rather than report them: ErrNotFound,
+// ErrOutcomeUnknown, and ErrWrongType. Every other server failure is a *ServerError whose Code is a stable wire error
+// code (see the Code constants) — branch on the code, never on the message text, which is not part of the
+// compatibility promise.
+//
+// # Compatibility
+//
+// Within v1.x this package makes no incompatible change to its API, wire format, or error contract. See
+// COMPATIBILITY.md in the repository for the full promise.
 package client
 
 import (
@@ -37,14 +51,23 @@ type transport interface {
 	Close() error
 }
 
-// Client is a client for the database server.
+// Client is a client for the database server. These guarantees are frozen for v1.x.
 //
-// It is safe for concurrent use by multiple goroutines; each connection carries one command at a time. Every method
-// takes a context that bounds the whole call, including connecting, and cancelling it interrupts a command already in
-// flight.
+// Concurrency: safe for concurrent use by any number of goroutines, including concurrently with Close. Commands on one
+// connection are serialized, so throughput across goroutines is bounded by the number of pooled servers; a caller that
+// needs more parallelism creates more clients.
 //
-// A command that fails after reaching the server returns ErrOutcomeUnknown, which the caller has to handle for
-// mutations: the client never repeats a command that may already have been applied.
+// Contexts: every method takes a context that bounds the whole call — waiting for a free connection, dialling, writing,
+// and reading the reply. Cancelling it interrupts a command already in flight rather than letting it run to the idle
+// timeout.
+//
+// Cancellation after transmission: once a command has been written in full, no reply can prove whether it ran.
+// Cancelling there returns ErrOutcomeUnknown for a mutation, and the error also matches the context error, so
+// errors.Is(err, context.Canceled) and errors.Is(err, ErrOutcomeUnknown) both hold. The client never repeats such a
+// command on its own; reads, and failures proven to have happened before any byte was sent, are retried transparently.
+//
+// Close: idempotent and terminal. Calling it more than once is safe and reports the first close's error contract; a
+// closed client never reconnects, and later calls fail instead.
 type Client struct {
 	transport transport
 }
@@ -88,7 +111,8 @@ func New(opts ...Option) (*Client, error) {
 	return &Client{transport: network.NewTCPClient(o.address, netOpts...)}, nil
 }
 
-// Set stores value under key in table
+// Set stores value under key in table. value is a typed literal parsed by the server, not an unconditional string:
+// Set(ctx, t, k, "42") stores the int 42, Set(ctx, t, k, "[1,2]") an array, and Set(ctx, t, k, `"42"`) the string "42".
 func (c *Client) Set(ctx context.Context, table, key, value string) error {
 	if err := validateArgs(table, key, value); err != nil {
 		return err
@@ -224,10 +248,11 @@ func okReply(resp protocol.Reply) error {
 	return errReply(resp)
 }
 
-// errReply maps a reply already known not to be the expected kind to the shared error contract.
+// errReply maps a reply already known not to be the expected kind to the shared error contract. A reply of an
+// unexpected kind is a contract violation rather than a server-declared failure, so it carries no code.
 func errReply(resp protocol.Reply) error {
 	if resp.Kind == protocol.ReplyError {
-		return &ServerError{Msg: resp.Value}
+		return &ServerError{Code: resp.Code, Msg: resp.Value}
 	}
 	return &ServerError{Msg: replyText(resp)}
 }
@@ -292,8 +317,14 @@ func stringArray(resp protocol.Reply) ([]string, error) {
 	return values, nil
 }
 
-// Raw sends a raw command line to the server and returns the response text as is, without error mapping. It gives
-// access to commands that have no typed wrapper yet.
+// Raw sends a raw command line to the server and returns the reply as text. It gives access to commands that have no
+// typed wrapper yet, and parses the line the way the CLI does: whitespace-separated tokens, with quoting and
+// backslash escapes.
+//
+// The rendering is frozen for v1.x: a simple or bulk string is its own text, an integer its decimal digits, a null
+// reply the text "not found", and an array its elements rendered the same way and joined with "\n" (nested arrays
+// flatten into that join). An error reply is not rendered — it is returned as a *ServerError carrying the wire code,
+// so a caller cannot mistake an error message for a value.
 func (c *Client) Raw(ctx context.Context, command string) (string, error) {
 	parts, err := splitCommandLine(command)
 	if err != nil {
@@ -306,11 +337,15 @@ func (c *Client) Raw(ctx context.Context, command string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if resp.Kind == protocol.ReplyError {
+		return "", errReply(resp)
+	}
 	return replyText(resp), nil
 }
 
-// Close closes the client's connections and retires it: later calls fail rather than reconnecting. It is safe to call
-// more than once, and safe to call while other goroutines have commands in flight, which it interrupts.
+// Close closes the client's connections and retires it: later calls fail rather than reconnecting. It is idempotent and
+// terminal — safe to call more than once, and safe to call while other goroutines have commands in flight, which it
+// interrupts rather than waiting for.
 func (c *Client) Close() error {
 	return c.transport.Close()
 }

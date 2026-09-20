@@ -14,8 +14,8 @@ import (
 	"github.com/OutOfStack/db/internal/protocol"
 )
 
-// readOnlyReply is the error value a standby returns for a mutating command (wire "-ERR readonly", decoded with the
-// "ERR " prefix stripped). It signals that the selected server is not actually a writable master.
+// readOnlyReply is the message a standby returns for a mutating command, kept as a fallback for a server predating the
+// READONLY wire code. It signals that the selected server is not actually a writable master.
 const readOnlyReply = "readonly"
 
 // Client represents a pooled client that can connect to multiple servers
@@ -153,9 +153,13 @@ func noServersError(write bool) error {
 	return errors.New("no servers available in pool")
 }
 
-// isReadOnlyReply reports whether resp is a standby's "ERR readonly" response.
+// isReadOnlyReply reports whether resp is a standby refusing a write. It matches the READONLY code, falling back to the
+// message so a server that predates the code is still routed away from.
 func isReadOnlyReply(resp protocol.Reply) bool {
-	return resp.Kind == protocol.ReplyError && strings.EqualFold(resp.Value, readOnlyReply)
+	if resp.Kind != protocol.ReplyError {
+		return false
+	}
+	return resp.Code == protocol.CodeReadOnly || strings.EqualFold(resp.Value, readOnlyReply)
 }
 
 // getConnection returns the client for address, creating it on first use. TCPClient connects lazily and serializes its

@@ -42,10 +42,14 @@ const (
 	SegSuffix = ".data"
 )
 
-// segmentHeader identifies a segment written by this build; the trailing byte is the format version. A non-empty
+// SegmentFormatVersion is the on-disk format version of the tiered engine's segments. A build reads only its own
+// version, so it is bumped only alongside a migration path.
+const SegmentFormatVersion = 2
+
+// segmentHeader identifies a segment written by this build; the trailing byte is the format version above. A non-empty
 // segment without it is rejected at open rather than parsed, since misreading one looks like a torn tail and gets
 // truncated away.
-const segmentHeader = "DBSEG\x00\x02"
+const segmentHeader = "DBSEG\x00" + string(rune(SegmentFormatVersion))
 
 var (
 	errPartial  = errors.New("partial tiered record")

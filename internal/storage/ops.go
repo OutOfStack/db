@@ -13,13 +13,17 @@ import (
 
 // rejection is the type of every error with which the command semantics refuse a value. rejected() classifies by this
 // type, so a newly added refusal cannot be forgotten there — forgetting would abort recovery on replay (see rejected).
+// Every refusal is a type violation on the wire, so they all carry protocol.CodeWrongType.
 type rejection string
 
 func (r rejection) Error() string { return string(r) }
 
+// ErrorCode implements protocol.Coded.
+func (r rejection) ErrorCode() string { return protocol.CodeWrongType }
+
 var (
-	// ErrWrongType is returned when a typed operation meets a value of another type. It reaches the client as "ERR wrong
-	// type: ...".
+	// ErrWrongType is returned when a typed operation meets a value of another type. It reaches the client as
+	// "WRONGTYPE wrong type: ...".
 	ErrWrongType = rejection("wrong type")
 	// ErrOverflow ErrNotFinite and ErrTooDeep are the other ways the command semantics refuse a value: arithmetic that
 	// leaves the int64 range or the finite floats, and nesting the codec could not read back.

@@ -137,10 +137,11 @@ func (w *Writer) Append(ctx context.Context, command string, args []string) (uin
 	if err := validateRecord(Record{Command: command, Args: args}); err != nil {
 		return 0, err
 	}
-	// Reject records the recovery reader could not decode (its RESP limit is maxRecordSize). The network layer's max
-	// message size is configurable and may exceed this, so guard here rather than persisting an unreadable record.
-	if size := protocol.CommandSize(command, args); size > maxRecordSize {
-		return 0, fmt.Errorf("WAL record size %d exceeds maximum %d bytes", size, maxRecordSize)
+	// Reject records the recovery reader could not decode (its RESP limit is MaxRecordSize). The network layer's max
+	// message size is configurable and may exceed this, so guard here rather than persisting an unreadable record. It is
+	// a format limit, so it carries the same wire code as the configurable message-size limits.
+	if err := checkRecordSize(command, args); err != nil {
+		return 0, err
 	}
 	result := make(chan writerResult, 1)
 	request := writerRequest{kind: requestAppend, command: command, args: append([]string(nil), args...), result: result}
@@ -176,10 +177,20 @@ func (w *Writer) AppendRecord(ctx context.Context, record Record) error {
 	if err := validateRecord(record); err != nil {
 		return err
 	}
-	if size := protocol.CommandSize(record.Command, record.Args); size > maxRecordSize {
-		return fmt.Errorf("WAL record size %d exceeds maximum %d bytes", size, maxRecordSize)
+	if err := checkRecordSize(record.Command, record.Args); err != nil {
+		return err
 	}
 	return w.control(ctx, writerRequest{kind: requestAppendReplicated, record: record})
+}
+
+// checkRecordSize rejects a record too large for the recovery reader to decode. Both append paths share it so a direct
+// write and a replicated one are refused identically, with the TOOLARGE wire code a format limit carries.
+func checkRecordSize(command string, args []string) error {
+	if size := protocol.CommandSize(command, args); size > MaxRecordSize {
+		return protocol.NewError(protocol.CodeTooLarge,
+			"WAL record size %d exceeds maximum %d bytes", size, MaxRecordSize)
+	}
+	return nil
 }
 
 // Reset discards all WAL segments and sets LastLSN to lsn, so the next appended record must be lsn+1. Standbys call it

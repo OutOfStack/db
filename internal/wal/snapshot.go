@@ -296,7 +296,7 @@ func applySnapshotFile(file *os.File, bodySize int64, apply func(table, key, val
 		} else if err != nil {
 			return err
 		}
-		command, args, readErr := protocol.ReadCommand(reader, maxRecordSize)
+		command, args, readErr := protocol.ReadCommand(reader, MaxRecordSize)
 		if readErr != nil {
 			return readErr
 		}

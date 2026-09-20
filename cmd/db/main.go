@@ -20,8 +20,8 @@ import (
 	"github.com/OutOfStack/db/internal/engine/tiered"
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/parser"
-	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/storage"
+	"github.com/OutOfStack/db/internal/version"
 	"github.com/OutOfStack/db/internal/wal"
 )
 
@@ -33,13 +33,20 @@ func main() {
 // the log file) runs before os.Exit.
 func execute() int {
 	var configPath string
+	var showVersion bool
 	var options startupOptions
 	flag.StringVar(&configPath, "config", "", "Path to configuration file")
+	flag.BoolVar(&showVersion, "version", false, "Print release, commit, protocol and storage format versions, then exit")
 	flag.BoolVar(&options.allowEphemeralOverData, "allow-ephemeral-over-data", false,
 		"Allow ephemeral startup when durable database files already exist")
 	flag.BoolVar(&options.clearUnverifiedHistory, "clear-unverified-history", false,
 		"Remove the replication unverified-history marker; use only after every standby has been reseeded")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Print(version.Get())
+		return 0
+	}
 
 	cfg, err := config.LoadServerConfig(configPath)
 	if err != nil {
@@ -297,7 +304,7 @@ func serve(
 	defer cancelRuntime()
 	serverDone := make(chan error, 1)
 	go func() {
-		serverDone <- srv.Serve(requestHandler(comp))
+		serverDone <- srv.Serve(comp.Handle)
 	}()
 	// Snapshots run for every role: a standby applies replicated records through the storage layer under the same lock a
 	// snapshot takes, so its snapshots are consistent, and this keeps a promoted node's WAL bounded.
@@ -320,22 +327,6 @@ func serve(
 	<-replDone
 	<-snapshotDone
 	return errors.Join(serveErr, replErr)
-}
-
-func requestHandler(comp *compute.Compute) network.RequestHandler {
-	return func(ctx context.Context, cmd string, args []string) protocol.Reply {
-		result, err := comp.HandleRequest(ctx, cmd, args)
-		if err == nil {
-			return result
-		}
-		if errors.Is(err, storage.ErrNotFound) {
-			return protocol.NullBulkString()
-		}
-		if errors.Is(err, storage.ErrReadOnly) {
-			return protocol.Error("readonly")
-		}
-		return protocol.Error(err.Error())
-	}
 }
 
 func roleName(role string) string {

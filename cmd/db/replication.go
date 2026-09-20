@@ -185,7 +185,7 @@ func (a *replicationAdmin) Promote(_ context.Context) (protocol.Reply, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.role == config.RoleMaster {
-		return protocol.Reply{}, errors.New("server is already master")
+		return protocol.Reply{}, protocol.NewError(protocol.CodeUnavailable, "server is already master")
 	}
 	// A terminal standby holds state that may not match any master's history; promoting it would make that state
 	// authoritative. Check before stopping replication, and again after: Stop cancels a resync in progress, and a

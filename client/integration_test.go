@@ -34,6 +34,18 @@ func startServer(t *testing.T, opts ...network.TCPServerOption) string {
 func startStoppableServer(t *testing.T, opts ...network.TCPServerOption) (addr string, stop func()) {
 	t.Helper()
 
+	return startServerWithStorage(t, storage.New(engine.New()), opts...)
+}
+
+// startServerWithStorage is startStoppableServer over a caller-built storage, for the states (read-only, fenced) a
+// plain engine cannot reach.
+func startServerWithStorage(
+	t *testing.T,
+	store *storage.Storage,
+	opts ...network.TCPServerOption,
+) (addr string, stop func()) {
+	t.Helper()
+
 	logger := slog.New(slog.DiscardHandler)
 
 	srv, err := network.NewTCPServer("127.0.0.1:0", logger, opts...)
@@ -41,20 +53,11 @@ func startStoppableServer(t *testing.T, opts ...network.TCPServerOption) (addr s
 		t.Fatalf("failed to start server: %v", err)
 	}
 
-	comp := compute.New(parser.New(), storage.New(engine.New()), logger)
+	comp := compute.New(parser.New(), store, logger)
 
 	done := make(chan error, 1)
 	go func() {
-		done <- srv.Serve(func(ctx context.Context, cmd string, args []string) protocol.Reply {
-			res, rErr := comp.HandleRequest(ctx, cmd, args)
-			if rErr != nil {
-				if errors.Is(rErr, storage.ErrNotFound) {
-					return protocol.NullBulkString()
-				}
-				return protocol.Error(rErr.Error())
-			}
-			return res
-		})
+		done <- srv.Serve(comp.Handle)
 	}()
 
 	addr = srv.Addr().String()
@@ -196,13 +199,20 @@ func TestClient_Raw_RoundTrip(t *testing.T) {
 		t.Errorf("Raw(SET) = %q, want %q", resp, "OK")
 	}
 
-	// Raw passes server errors through as text
+	// Raw surfaces a wire error as a coded *ServerError rather than as reply text
 	resp, err = c.Raw(ctx, "GET users")
-	if err != nil {
-		t.Fatalf("Raw(GET) error = %v", err)
+	var serverErr *client.ServerError
+	if !errors.As(err, &serverErr) {
+		t.Fatalf("Raw(GET) error = %v (%T), want *client.ServerError", err, err)
 	}
-	if resp != "GET requires 2 arguments: GET <table> <key>" {
-		t.Errorf("Raw(GET) = %q, want arity error text", resp)
+	if serverErr.Code != client.CodeArity {
+		t.Errorf("Raw(GET) code = %q, want %q", serverErr.Code, client.CodeArity)
+	}
+	if serverErr.Msg != "GET requires 2 arguments: GET <table> <key>" {
+		t.Errorf("Raw(GET) message = %q, want arity error text", serverErr.Msg)
+	}
+	if resp != "" {
+		t.Errorf("Raw(GET) = %q, want no text alongside an error", resp)
 	}
 
 	resp, err = c.Raw(ctx, `SET users quoted "vlad has spaces"`)

@@ -9,6 +9,10 @@ import (
 	"strings"
 )
 
+// Version identifies the wire protocol this build speaks: RESP2 framing over the documented command subset. It is not
+// Redis compatibility — the subset described in COMPATIBILITY.md is the contract.
+const Version = "RESP2"
+
 type ReplyKind int
 
 const (
@@ -25,6 +29,8 @@ type Reply struct {
 	Value   string
 	Integer int64
 	Array   []Reply
+	// Code is the wire error code of a ReplyError (see the Code* constants); it is empty on every other kind.
+	Code string
 }
 
 func SimpleString(value string) Reply {
@@ -39,8 +45,19 @@ func NullBulkString() Reply {
 	return Reply{Kind: ReplyNull}
 }
 
+// Error builds an unclassified error reply. Use CodedError where the failure has a documented code.
 func Error(value string) Reply {
-	return Reply{Kind: ReplyError, Value: value}
+	return CodedError(CodeErr, value)
+}
+
+// CodedError builds an error reply carrying a stable wire error code.
+func CodedError(code, value string) Reply {
+	return Reply{Kind: ReplyError, Value: value, Code: code}
+}
+
+// ErrorFor builds the error reply for err, taking its code from the error chain.
+func ErrorFor(err error) Reply {
+	return CodedError(CodeOf(err), err.Error())
 }
 
 func Integer(value int64) Reply {
@@ -100,15 +117,15 @@ func ReadCommand(r *bufio.Reader, maxMessageSize int) (string, []string, error) 
 		return "", nil, err
 	}
 	if len(line) == 0 || line[0] != '*' {
-		return "", nil, errors.New("expected RESP array command")
+		return "", nil, NewError(CodeProtocol, "expected RESP array command")
 	}
 
 	count, err := parseLen(line[1:])
 	if err != nil {
-		return "", nil, fmt.Errorf("invalid command array length: %w", err)
+		return "", nil, NewError(CodeProtocol, "invalid command array length: %s", err)
 	}
 	if count <= 0 {
-		return "", nil, errors.New("command array cannot be empty")
+		return "", nil, NewError(CodeProtocol, "command array cannot be empty")
 	}
 	if err = checkArrayLen(count, maxMessageSize); err != nil {
 		return "", nil, err
@@ -137,13 +154,16 @@ func WriteReply(w io.Writer, reply Reply) error {
 		_, err := io.WriteString(w, "$-1\r\n")
 		return err
 	case ReplyError:
+		code := reply.Code
+		if !isErrorCode(code) {
+			code = CodeErr
+		}
 		value := sanitizeLine(reply.Value)
 		if value == "" {
-			value = "ERR"
-		} else if !strings.HasPrefix(value, "ERR ") {
-			value = "ERR " + value
+			_, err := fmt.Fprintf(w, "-%s\r\n", code)
+			return err
 		}
-		_, err := fmt.Fprintf(w, "-%s\r\n", value)
+		_, err := fmt.Fprintf(w, "-%s %s\r\n", code, value)
 		return err
 	case ReplyInteger:
 		_, err := fmt.Fprintf(w, ":%d\r\n", reply.Integer)
@@ -174,20 +194,19 @@ func readReply(r *bufio.Reader, maxMessageSize int, read *int) (Reply, error) {
 		return Reply{}, err
 	}
 	if len(line) == 0 {
-		return Reply{}, errors.New("empty RESP reply")
+		return Reply{}, NewError(CodeProtocol, "empty RESP reply")
 	}
 
 	switch line[0] {
 	case '+':
 		return SimpleString(line[1:]), nil
 	case '-':
-		value := line[1:]
-		value = strings.TrimPrefix(value, "ERR ")
-		return Error(value), nil
+		code, msg := splitErrorCode(line[1:])
+		return CodedError(code, msg), nil
 	case ':':
 		value, pErr := strconv.ParseInt(line[1:], 10, 64)
 		if pErr != nil {
-			return Reply{}, fmt.Errorf("invalid integer reply: %w", pErr)
+			return Reply{}, NewError(CodeProtocol, "invalid integer reply: %s", pErr)
 		}
 		return Integer(value), nil
 	case '$':
@@ -202,14 +221,14 @@ func readReply(r *bufio.Reader, maxMessageSize int, read *int) (Reply, error) {
 	case '*':
 		return readArrayReply(r, line[1:], maxMessageSize, read)
 	default:
-		return Reply{}, fmt.Errorf("unknown RESP reply prefix %q", line[0])
+		return Reply{}, NewError(CodeProtocol, "unknown RESP reply prefix %q", line[0])
 	}
 }
 
 func readArrayReply(r *bufio.Reader, lenText string, maxMessageSize int, read *int) (Reply, error) {
 	count, err := parseLen(lenText)
 	if err != nil {
-		return Reply{}, fmt.Errorf("invalid array reply length: %w", err)
+		return Reply{}, NewError(CodeProtocol, "invalid array reply length: %s", err)
 	}
 	if count < 0 {
 		return NullBulkString(), nil
@@ -245,7 +264,7 @@ func readCommandBulkString(r *bufio.Reader, maxMessageSize int, read *int) (stri
 		return "", err
 	}
 	if len(line) == 0 || line[0] != '$' {
-		return "", errors.New("command arguments must be bulk strings")
+		return "", NewError(CodeProtocol, "command arguments must be bulk strings")
 	}
 
 	value, null, err := readBulkStringBody(r, line[1:], maxMessageSize, read)
@@ -253,7 +272,7 @@ func readCommandBulkString(r *bufio.Reader, maxMessageSize int, read *int) (stri
 		return "", err
 	}
 	if null {
-		return "", errors.New("command arguments cannot be null")
+		return "", NewError(CodeProtocol, "command arguments cannot be null")
 	}
 	return value, nil
 }
@@ -261,18 +280,18 @@ func readCommandBulkString(r *bufio.Reader, maxMessageSize int, read *int) (stri
 func readBulkStringBody(r *bufio.Reader, lenText string, maxMessageSize int, read *int) (string, bool, error) {
 	n, err := parseLen(lenText)
 	if err != nil {
-		return "", false, fmt.Errorf("invalid bulk string length: %w", err)
+		return "", false, NewError(CodeProtocol, "invalid bulk string length: %s", err)
 	}
 	if n == -1 {
 		return "", true, nil
 	}
 	if n < -1 {
-		return "", false, errors.New("invalid negative bulk string length")
+		return "", false, NewError(CodeProtocol, "invalid negative bulk string length")
 	}
 	// overflow-safe size check: n is non-negative here, so compare against the remaining budget instead of computing
 	// *read+n+2, which can overflow for lengths near math.MaxInt and bypass the limit.
 	if maxMessageSize > 0 && n > maxMessageSize-*read-2 {
-		return "", false, errors.New("message size exceeds limit")
+		return "", false, NewError(CodeTooLarge, "message size exceeds limit")
 	}
 
 	buf := make([]byte, n+2)
@@ -281,7 +300,7 @@ func readBulkStringBody(r *bufio.Reader, lenText string, maxMessageSize int, rea
 	}
 	*read += len(buf)
 	if len(buf) < 2 || buf[len(buf)-2] != '\r' || buf[len(buf)-1] != '\n' {
-		return "", false, errors.New("bulk string missing CRLF terminator")
+		return "", false, NewError(CodeProtocol, "bulk string missing CRLF terminator")
 	}
 
 	return string(buf[:n]), false, nil
@@ -294,7 +313,7 @@ func readLine(r *bufio.Reader, maxMessageSize int, read *int) (string, error) {
 		out = append(out, part...)
 		*read += len(part)
 		if maxMessageSize > 0 && *read > maxMessageSize {
-			return "", errors.New("message size exceeds limit")
+			return "", NewError(CodeTooLarge, "message size exceeds limit")
 		}
 		if err == nil {
 			break
@@ -306,7 +325,7 @@ func readLine(r *bufio.Reader, maxMessageSize int, read *int) (string, error) {
 	}
 
 	if len(out) < 2 || out[len(out)-2] != '\r' {
-		return "", errors.New("RESP line missing CRLF terminator")
+		return "", NewError(CodeProtocol, "RESP line missing CRLF terminator")
 	}
 	return string(out[:len(out)-2]), nil
 }
@@ -323,7 +342,7 @@ const (
 // allocation happens
 func checkArrayLen(count, maxMessageSize int) error {
 	if maxMessageSize > 0 && count > maxMessageSize/minArrayElemSize {
-		return errors.New("message size exceeds limit")
+		return NewError(CodeTooLarge, "message size exceeds limit")
 	}
 	return nil
 }

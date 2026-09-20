@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -12,15 +13,23 @@ import (
 
 	"github.com/OutOfStack/db/client"
 	"github.com/OutOfStack/db/internal/config"
+	"github.com/OutOfStack/db/internal/version"
 )
 
 func main() {
 	var configPath, address string
+	var showVersion bool
 	var timeout time.Duration
 	flag.StringVar(&configPath, "config", "", "Path to configuration file")
+	flag.BoolVar(&showVersion, "version", false, "Print release, commit, protocol and storage format versions, then exit")
 	flag.StringVar(&address, "address", "", "Database server address (overrides config)")
 	flag.DurationVar(&timeout, "timeout", 0, "Connection idle timeout (overrides config)")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Print(version.Get())
+		return
+	}
 
 	cfg, err := config.LoadClientConfig(configPath)
 	if err != nil {
@@ -52,6 +61,11 @@ func main() {
 	} else {
 		fmt.Printf("Using database server at %s\n", cfg.Network.Address)
 	}
+	printBanner()
+	repl(dbClient)
+}
+
+func printBanner() {
 	fmt.Println("Available commands:")
 	fmt.Println("  SET table key value")
 	fmt.Println("  SET table key \"value with spaces\"")
@@ -69,7 +83,10 @@ func main() {
 	fmt.Println("Wrap a literal in single quotes when it contains quotes, spaces or backslashes: SET t conf '{\"a\":1}'")
 	fmt.Println("Type 'exit' to quit")
 	fmt.Println()
+}
 
+// repl reads command lines from stdin until end of input, "exit", or a transport failure.
+func repl(dbClient *client.Client) {
 	ctx := context.Background()
 	scanner := bufio.NewScanner(os.Stdin)
 	for {
@@ -89,13 +106,19 @@ func main() {
 
 		response, sErr := dbClient.Raw(ctx, input)
 		if sErr != nil {
+			// A rejected command is an answer, not a broken session: print it and keep the prompt. Only a transport failure
+			// ends the loop, because the connection can no longer be trusted to carry the next command.
+			if serverErr, ok := errors.AsType[*client.ServerError](sErr); ok {
+				fmt.Printf("%s %s\n", serverErr.Code, serverErr.Msg)
+				continue
+			}
 			fmt.Printf("Failed to send command: %v\n", sErr)
 			break
 		}
 		fmt.Println(response)
 	}
 
-	if err = scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil {
 		fmt.Printf("Input error: %v\n", err)
 	}
 }
