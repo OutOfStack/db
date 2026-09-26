@@ -109,6 +109,8 @@ codes have to degrade rather than fail.
 
 The full contract is on the types in [`client`](client); this is the summary.
 
+- **Unknown codes.** `ServerError.Code` is always one of the client's code constants: a code this client version does
+  not recognize, from a later server, is reported as `CodeErr` with the server's token kept at the start of `Msg`.
 - **Sentinels.** Only three conditions have exported sentinels, because only these three are usually acted on rather
   than reported: `ErrNotFound`, `ErrOutcomeUnknown`, and `ErrWrongType`. Everything else is a `*ServerError` — match it
   with `errors.As` and branch on `.Code`.

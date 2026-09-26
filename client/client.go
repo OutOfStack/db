@@ -252,7 +252,7 @@ func okReply(resp protocol.Reply) error {
 // unexpected kind is a contract violation rather than a server-declared failure, so it carries no code.
 func errReply(resp protocol.Reply) error {
 	if resp.Kind == protocol.ReplyError {
-		return &ServerError{Code: resp.Code, Msg: resp.Value}
+		return serverError(resp.Code, resp.Value)
 	}
 	return &ServerError{Msg: replyText(resp)}
 }

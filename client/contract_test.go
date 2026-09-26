@@ -194,6 +194,39 @@ func TestErrorCodeSpellings(t *testing.T) {
 	}
 }
 
+// TestUnrecognizedCodeDegradesToErr pins the forward-compatibility rule: a later v1.x server may give a condition a
+// narrower code, and a client built before that code existed must still report it as CodeErr — the code it reported
+// for that condition before — keeping the token in the message.
+func TestUnrecognizedCodeDegradesToErr(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		reply protocol.Reply
+		code  string
+		msg   string
+	}{
+		{name: "unknown code", reply: protocol.CodedError("FUTURE", "narrower failure"), code: client.CodeErr,
+			msg: "FUTURE narrower failure"},
+		{name: "known code", reply: protocol.CodedError(client.CodeWrongType, "key holds string"),
+			code: client.CodeWrongType, msg: "key holds string"},
+		{name: "plain ERR", reply: protocol.Error("unspecified"), code: client.CodeErr, msg: "unspecified"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := client.NewWithTransport(&fakeTransport{resp: tc.reply})
+			_, err := c.Get(t.Context(), "users", "name")
+			serverErr, ok := errors.AsType[*client.ServerError](err)
+			if !ok {
+				t.Fatalf("Get() error = %v, want *ServerError", err)
+			}
+			if serverErr.Code != tc.code || serverErr.Msg != tc.msg {
+				t.Errorf("ServerError = {%q, %q}, want {%q, %q}", serverErr.Code, serverErr.Msg, tc.code, tc.msg)
+			}
+		})
+	}
+}
+
 // TestCloseIsIdempotentAndTerminal covers the lifecycle the Client type documents: closing twice is not an error, and a
 // closed client fails later commands rather than dialling the still-running server again.
 func TestCloseIsIdempotentAndTerminal(t *testing.T) {

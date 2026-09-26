@@ -2,13 +2,15 @@ package client
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/OutOfStack/db/internal/network"
 )
 
 // Wire error codes carried by ServerError.Code. Every error reply starts with one of these, and the set is frozen for
-// v1.x: a code keeps its meaning, and a condition that reports CodeErr today may be given a narrower code later. Match
-// an unrecognized code as CodeErr.
+// v1.x: a code keeps its meaning, and a condition that reports CodeErr today may be given a narrower code later. The
+// client reports a code it does not know — one a later server introduced — as CodeErr, so code written against this
+// version keeps matching the conditions it matched before.
 //
 // They are spelled out here rather than aliased from an internal package so the public API documents its own strings;
 // the error-code matrix test drives a real server for each one, which is what keeps them from drifting.
@@ -54,9 +56,10 @@ var ErrOutcomeUnknown = network.ErrOutcomeUnknown
 // conditions a caller usually handles differently rather than reports. Branch on ServerError.Code for the rest.
 var ErrWrongType = errors.New("wrong type")
 
-// ServerError represents an error message returned by the server. Code is the stable wire error code (see the Code
-// constants); Msg is the human-readable text, which is not part of the compatibility promise and may change between
-// releases.
+// ServerError represents an error message returned by the server. Code is the stable wire error code, always one of
+// the Code constants: a code this version of the client does not recognize is reported as CodeErr, with the server's
+// token kept at the start of Msg. Msg is the human-readable text, which is not part of the compatibility promise and may
+// change between releases.
 type ServerError struct {
 	Code string
 	Msg  string
@@ -73,4 +76,25 @@ func (e *ServerError) Error() string {
 // Is lets errors.Is match a coded server error against the exported sentinel for that code.
 func (e *ServerError) Is(target error) bool {
 	return target == ErrWrongType && e.Code == CodeWrongType
+}
+
+// knownCode reports code when this client recognizes it, and CodeErr otherwise.
+func knownCode(code string) (string, bool) {
+	switch code {
+	case CodeErr, CodeProtocol, CodeUnknownCommand, CodeArity, CodeArgument, CodeTooLarge, CodeWrongType, CodeReadOnly,
+		CodeUnavailable:
+		return code, true
+	default:
+		return CodeErr, false
+	}
+}
+
+// serverError builds the error for a decoded error reply. An unrecognized code degrades to CodeErr, as the contract
+// requires, and its token moves into the message so no information is lost.
+func serverError(code, msg string) *ServerError {
+	known, ok := knownCode(code)
+	if !ok && code != "" {
+		msg = strings.TrimSpace(code + " " + msg)
+	}
+	return &ServerError{Code: known, Msg: msg}
 }
