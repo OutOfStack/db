@@ -10,7 +10,6 @@ package tiered
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"maps"
 	"os"
@@ -278,11 +277,13 @@ func (e *Engine) setLocked(tbl, key, value string) error {
 	if err := e.store.terminalErr; err != nil {
 		return err
 	}
+	// The record format stores these lengths in fixed-width fields. Like every format limit, exceeding one is TOOLARGE;
+	// the key limit is reachable once network.max_message_size is raised past 64 KiB.
 	if len(tbl) > maxFieldLen || len(key) > maxFieldLen {
-		return fmt.Errorf("table/key exceeds %d bytes", maxFieldLen)
+		return protocol.NewError(protocol.CodeTooLarge, "table/key exceeds %d bytes", maxFieldLen)
 	}
 	if len(value) > maxValueLen {
-		return fmt.Errorf("value exceeds %d bytes", maxValueLen)
+		return protocol.NewError(protocol.CodeTooLarge, "value exceeds %d bytes", maxValueLen)
 	}
 	rec := encodeRecord(tbl, key, value, false)
 	recSize := int64(len(rec))

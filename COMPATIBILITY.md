@@ -99,7 +99,7 @@ Every error reply begins with a code token, a space, and a human-readable messag
 | `TOOLARGE` | past a configured or format limit | table name over 128 bytes, message over `max_message_size`, tiered storage full |
 | `WRONGTYPE` | the key holds another type, or the arithmetic does not fit it | `INCR` on a string, `HGET` on an array, `INCR` past the int64 range |
 | `READONLY` | mutation sent to a replication standby | writes before a `PROMOTE` |
-| `UNAVAILABLE` | the server cannot serve this in its current state | storage fenced into a terminal state, replication not enabled, `PROMOTE` disabled |
+| `UNAVAILABLE` | the server cannot serve this in its current state | storage fenced or latched into a terminal state (a failed WAL or tiered fsync), replication not enabled, `PROMOTE` disabled |
 
 A client that meets a code it does not recognize must treat it as `ERR`. Within v1.x a code is never removed and never
 given a new meaning; a condition that reports `ERR` today may later be given a narrower code, which is why unrecognized
