@@ -2,6 +2,7 @@ package wal
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/OutOfStack/db/internal/protocol"
 )
@@ -14,11 +15,18 @@ var ErrTerminal = protocol.NewError(protocol.CodeUnavailable, "WAL is in a termi
 
 // Status is a concurrent view of WAL health. SyncedLSN is a lower bound on the durable prefix, initialized to the
 // recovered LSN at open and advanced only by successful syncs or a durable snapshot. LastLSN may be ahead of it.
+//
+// LastSync is when an fsync of the WAL last succeeded, and is zero until the first one in this process. Under SyncNo
+// only the fsync before a snapshot's prune sets it. SnapshotLSN and LastSnapshot describe the newest snapshot; the
+// writer leaves them zero and the storage layer, which runs snapshots, fills them in.
 type Status struct {
 	Ready            bool
 	Degraded         bool
 	LastLSN          uint64
 	SyncedLSN        uint64
+	LastSync         time.Time
+	SnapshotLSN      uint64
+	LastSnapshot     time.Time
 	TerminalError    error
 	MaintenanceError error
 }
@@ -32,6 +40,7 @@ func (w *Writer) Status() Status {
 		Degraded:         w.terminalErr != nil || w.maintenanceErr != nil,
 		LastLSN:          w.lastLSN.Load(),
 		SyncedLSN:        w.syncedLSN.Load(),
+		LastSync:         w.lastSyncTime(),
 		TerminalError:    w.terminalErr,
 		MaintenanceError: w.maintenanceErr,
 	}
@@ -44,4 +53,18 @@ func (w *Writer) fail(state *writerState, err error) {
 	w.statusMu.Lock()
 	w.terminalErr = state.terminalErr
 	w.statusMu.Unlock()
+}
+
+// markSynced records a successful fsync that made every record up to lsn durable.
+func (w *Writer) markSynced(lsn uint64) {
+	w.syncedLSN.Store(lsn)
+	w.lastSync.Store(time.Now().UnixNano())
+}
+
+func (w *Writer) lastSyncTime() time.Time {
+	nanos := w.lastSync.Load()
+	if nanos == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, nanos)
 }

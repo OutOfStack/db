@@ -3,7 +3,7 @@ package engine
 import (
 	"context"
 	"errors"
-	"sort"
+	"maps"
 	"sync"
 )
 
@@ -32,17 +32,12 @@ type Entry struct {
 	Value string
 }
 
-// Tables returns all table names in sorted order.
-func (e *Engine) Tables(_ context.Context) []string {
+// Tables returns all table names in sorted order. A listing whose reply would exceed maxBytes is refused with TOOLARGE
+// (see CollectSorted); maxBytes <= 0 lists without a bound.
+func (e *Engine) Tables(_ context.Context, maxBytes int) ([]string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-
-	tables := make([]string, 0, len(e.store))
-	for table := range e.store {
-		tables = append(tables, table)
-	}
-	sort.Strings(tables)
-	return tables
+	return CollectSorted(maps.Keys(e.store), maxBytes)
 }
 
 // TableExists reports whether a table currently contains at least one key.
@@ -54,18 +49,11 @@ func (e *Engine) TableExists(_ context.Context, table string) bool {
 	return ok
 }
 
-// Keys returns all keys in table in sorted order.
-func (e *Engine) Keys(_ context.Context, table string) []string {
+// Keys returns all keys in table in sorted order, bounded by maxBytes like Tables.
+func (e *Engine) Keys(_ context.Context, table string, maxBytes int) ([]string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-
-	t := e.store[table]
-	keys := make([]string, 0, len(t))
-	for key := range t {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return CollectSorted(maps.Keys(e.store[table]), maxBytes)
 }
 
 // New creates a new Engine instance

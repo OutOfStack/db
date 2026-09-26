@@ -257,7 +257,8 @@ func errReply(resp protocol.Reply) error {
 	return &ServerError{Msg: replyText(resp)}
 }
 
-// Tables returns all table names in sorted order.
+// Tables returns all table names in sorted order. A listing whose reply would exceed the server's message-size limit is
+// refused whole with a *ServerError of CodeTooLarge; it is never truncated.
 func (c *Client) Tables(ctx context.Context) ([]string, error) {
 	resp, err := c.send(ctx, "TABLES", nil)
 	if err != nil {
@@ -289,8 +290,8 @@ func (c *Client) TableExists(ctx context.Context, table string) (bool, error) {
 	}
 }
 
-// Keys returns all keys in table in sorted order. A missing table returns an empty slice. The response is subject to
-// the configured message-size limit.
+// Keys returns all keys in table in sorted order. A missing table returns an empty slice. Like Tables, a listing past the
+// server's message-size limit is refused with a *ServerError of CodeTooLarge rather than truncated.
 func (c *Client) Keys(ctx context.Context, table string) ([]string, error) {
 	if err := validateArgs(table); err != nil {
 		return nil, err

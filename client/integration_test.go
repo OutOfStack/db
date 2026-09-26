@@ -18,6 +18,7 @@ import (
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/parser"
 	"github.com/OutOfStack/db/internal/protocol"
+	"github.com/OutOfStack/db/internal/status"
 	"github.com/OutOfStack/db/internal/storage"
 )
 
@@ -53,7 +54,8 @@ func startServerWithStorage(
 		t.Fatalf("failed to start server: %v", err)
 	}
 
-	comp := compute.New(parser.New(), store, logger)
+	comp := compute.New(parser.New(), store, logger,
+		compute.WithStatus(status.New(engine.TypeInMemory, status.DurabilityEphemeral, store, nil)))
 
 	done := make(chan error, 1)
 	go func() {

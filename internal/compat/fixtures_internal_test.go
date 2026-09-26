@@ -3,6 +3,7 @@ package compat
 import (
 	"path/filepath"
 
+	"github.com/OutOfStack/db/internal/datadir"
 	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/wal"
 )
@@ -10,22 +11,47 @@ import (
 // Fixture layout. Paths are part of the contract too: the reader tests below and any future generator address the same
 // files, so a v1.x build cannot quietly read a different set.
 const (
-	goldenDir    = "testdata/golden/v1"
-	requestsFile = "wire/requests.resp"
-	repliesFile  = "wire/replies.resp"
-	dataDir      = "data"
+	goldenDir              = "testdata/golden/v1"
+	requestsFile           = "wire/requests.resp"
+	repliesFile            = "wire/replies.resp"
+	operationsRequestsFile = "wire/operations-requests.resp"
+	operationsRepliesFile  = "wire/operations-replies.resp"
+	dataDir                = "data"
 )
 
 func goldenPath(name string) string {
 	return filepath.Join(filepath.FromSlash(goldenDir), filepath.FromSlash(name))
 }
 
-// goldenRequests is every command the v1 registry accepts, in the wire form a v1 client emits. The stream in
-// requests.resp is these frames concatenated, so the reader test both decodes it and re-encodes it byte for byte.
-var goldenRequests = []struct { //nolint:gochecknoglobals // the fixture expectations are package-level data by nature
+// goldenRequest is one recorded request frame.
+type goldenRequest struct {
 	cmd  string
 	args []string
-}{
+}
+
+// wireSet is one pair of recorded request and reply streams. Each file is its list's frames concatenated, so the reader
+// tests both decode it and re-encode it byte for byte.
+type wireSet struct {
+	name         string
+	requestsFile string
+	repliesFile  string
+	requests     []goldenRequest
+	replies      []protocol.Reply
+}
+
+// goldenWireSets lists every frozen wire fixture. A set is only ever added, never regenerated: the operations set froze
+// the health commands in addition to the core set, rather than by rewriting it.
+var goldenWireSets = []wireSet{ //nolint:gochecknoglobals // the fixture expectations are package-level data by nature
+	{name: "core", requestsFile: requestsFile, repliesFile: repliesFile, requests: goldenRequests, replies: goldenReplies},
+	{
+		name: "operations", requestsFile: operationsRequestsFile, repliesFile: operationsRepliesFile,
+		requests: goldenOperationsRequests, replies: goldenOperationsReplies,
+	},
+}
+
+// goldenRequests is every data and replication command the v1 registry accepts, in the wire form a v1 client emits;
+// goldenOperationsRequests covers the health commands.
+var goldenRequests = []goldenRequest{ //nolint:gochecknoglobals // the fixture expectations are package-level data by nature
 	{cmd: "SET", args: []string{"users", "name", "vlad"}},
 	{cmd: "SET", args: []string{"users", "age", "41"}},
 	{cmd: "SET", args: []string{"users", "score", "41.5"}},
@@ -75,6 +101,47 @@ var goldenReplies = []protocol.Reply{ //nolint:gochecknoglobals // the fixture e
 	protocol.CodedError(protocol.CodeWrongType, "wrong type: key holds string, INCR requires int or float"),
 	protocol.CodedError(protocol.CodeReadOnly, "readonly"),
 	protocol.CodedError(protocol.CodeUnavailable, "storage is in a terminal state"),
+}
+
+var goldenOperationsRequests = []goldenRequest{ //nolint:gochecknoglobals // the fixture expectations are package-level data by nature
+	{cmd: "PING", args: nil},
+	{cmd: "STATUS", args: nil},
+}
+
+// goldenOperationsReplies holds PONG, a complete STATUS reply — whose field names, in order, are the frozen STATUS
+// contract that TestGoldenStatusFields holds the live reporter to — and the refusal of an over-limit listing.
+var goldenOperationsReplies = []protocol.Reply{ //nolint:gochecknoglobals // the fixture expectations are package-level data by nature
+	protocol.SimpleString("PONG"),
+	protocol.BulkStringArray([]string{
+		"ready", "true",
+		"state", "ok",
+		"error", "",
+		"role", "standalone",
+		"engine", "in_memory",
+		"durability", "everysec",
+		"applied_lsn", "16",
+		"synced_lsn", "16",
+		"snapshot_lsn", "5",
+		"last_sync", "2026-09-25T10:00:00Z",
+		"last_snapshot", "",
+		"release", "v1.0.0",
+		"protocol", "RESP2",
+		"wal_format", "2",
+		"snapshot_format", "3",
+		"segment_format", "2",
+	}),
+	protocol.CodedError(protocol.CodeTooLarge,
+		"listing exceeds the 4096-byte reply limit (network.max_message_size); nothing was truncated"),
+}
+
+// goldenManifest is the MANIFEST the fixture data directory carries. Its format numbers are written out rather than
+// taken from the wal package, because they record what v1.0 wrote, not what this build writes.
+var goldenManifest = datadir.Manifest{ //nolint:gochecknoglobals // the fixture expectations are package-level data by nature
+	Version: 1,
+	Engine:  "in_memory",
+	Formats: map[string]int{"wal": 2, "snapshot": 3},
+	Sync:    "always",
+	Release: "v1.0.0",
 }
 
 // goldenSnapshotLSN is the LSN the fixture snapshot carries; the fixture segment continues from it.

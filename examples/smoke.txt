@@ -1,15 +1,22 @@
-# Example commands for the Simple DB service. Pipe this file into the CLI to run it:
+# Smoke test for a standalone server: every command here must succeed, so the run exits 0. Pipe it into the CLI:
 #
-#   ./bin/db-cli < examples/commands.txt
+#   ./bin/db-cli -q < examples/smoke.txt && echo ok
+#
+# -q prints errors only, and the exit status is nonzero if any command fails. It is safe to run repeatedly against the
+# same server. For the failures each command can report, see errors.txt.
 #
 # Comments must be on their own line: the CLI skips those, but anything after a command on the same line is parsed as
 # another argument.
+
+# Health: PING answers PONG; STATUS reports readiness, durability, role, LSNs and format versions.
+PING
+STATUS
 
 # Basic operations. Keys are scoped by table.
 SET users name John
 GET users name
 
-# Delete and verify
+# Delete and verify. A missing key is a reply ("not found"), not an error.
 DEL users name
 GET users name
 
@@ -53,23 +60,7 @@ HSET users u1 age 42
 HGET users u1 age
 GET users u1
 
-# Introspection
+# Introspection. Listings larger than the server's network.max_message_size are refused with TOOLARGE.
 TABLES
 EXISTS users
 KEYS users
-
-# Replication (master/standby): role, applied LSN, lag, connection state
-REPLICATION STATUS
-# Promote a standby to master
-PROMOTE
-
-# Errors: each of these is rejected and changes nothing. Missing value
-SET users name
-# Too many arguments
-GET users name extra
-# Unknown command
-UNKNOWN foo
-# Wrong type for the operation
-INCR events log
-# Malformed map literal
-SET types broken '{"a":'

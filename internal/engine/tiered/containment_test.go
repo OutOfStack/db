@@ -115,7 +115,9 @@ func TestBitFlipFailsColdReadAndRecovery(t *testing.T) {
 	require.ErrorContains(t, err, "checksum mismatch")
 	require.Equal(t, "ok", mustGet(t, e, "t", "fine"))
 	// The keydir is untouched: the key is still present, just unreadable.
-	require.Equal(t, []string{"fine", "victim"}, e.Keys(ctx, "t"))
+	keys, err := e.Keys(ctx, "t", 0)
+	require.NoError(t, err)
+	require.Equal(t, []string{"fine", "victim"}, keys)
 	require.True(t, e.Status().Ready, "a corrupt read must not stop the engine")
 	require.NoError(t, e.Close())
 

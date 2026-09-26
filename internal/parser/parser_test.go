@@ -87,6 +87,8 @@ func TestIsWrite(t *testing.T) {
 		"KEYS":        false,
 		"PROMOTE":     false,
 		"REPLICATION": false,
+		"PING":        false,
+		"STATUS":      false,
 		"NONSENSE":    false,
 	}
 	for cmd, want := range tests {
@@ -106,9 +108,12 @@ func TestIsAdmin(t *testing.T) {
 	tests := map[string]bool{
 		"PROMOTE":     true,
 		"REPLICATION": true,
-		"SET":         false,
-		"GET":         false,
-		"NONSENSE":    false,
+		// STATUS describes one node, so a pool must not pick one for it; PING is answered correctly by any server.
+		"STATUS":   true,
+		"PING":     false,
+		"SET":      false,
+		"GET":      false,
+		"NONSENSE": false,
 	}
 	for cmd, want := range tests {
 		if got := parser.IsAdmin(cmd); got != want {
@@ -140,6 +145,8 @@ func TestIsMutation(t *testing.T) {
 		"EXISTS":      false,
 		"KEYS":        false,
 		"REPLICATION": false,
+		"PING":        false,
+		"STATUS":      false,
 	}
 	for cmd, want := range tests {
 		if got := parser.IsMutation(cmd); got != want {

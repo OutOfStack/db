@@ -1,0 +1,10 @@
+{
+  "manifest_version": 1,
+  "engine": "in_memory",
+  "formats": {
+    "snapshot": 3,
+    "wal": 2
+  },
+  "sync": "always",
+  "release": "v1.0.0"
+}

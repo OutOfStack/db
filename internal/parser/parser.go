@@ -12,6 +12,8 @@ const maxTableNameLen = 128
 const (
 	commandTables  = "TABLES"
 	commandPromote = "PROMOTE"
+	commandPing    = "PING"
+	commandStatus  = "STATUS"
 )
 
 // Parser implements a parser for a simple key-value store
@@ -42,6 +44,10 @@ var commands = map[string]commandSpec{ //nolint:gochecknoglobals // a single reg
 	"TYPE":         {args: 2, readOnly: true, usage: "TYPE <table> <key>"},
 	commandPromote: {args: 0, readOnly: false, admin: true, usage: commandPromote},
 	"REPLICATION":  {args: 1, readOnly: true, admin: true, usage: "REPLICATION STATUS"},
+	// PING answers from whichever server a pool picks, which is all a liveness check needs. STATUS describes one node's
+	// storage and role, so it is admin: a pool cannot say which server's state it would be reporting.
+	commandPing:   {args: 0, readOnly: true, usage: commandPing},
+	commandStatus: {args: 0, readOnly: true, admin: true, usage: commandStatus},
 }
 
 // IsWrite reports whether cmd mutates state and so has to be routed to a master. The pool asks this rather than keeping

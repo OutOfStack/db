@@ -77,6 +77,7 @@ type Writer struct {
 	closing        atomic.Bool
 	lastLSN        atomic.Uint64
 	syncedLSN      atomic.Uint64
+	lastSync       atomic.Int64 // unix nanoseconds of the last successful fsync; 0 before the first
 	statusMu       sync.RWMutex
 	terminalErr    error
 	maintenanceErr error
@@ -324,7 +325,7 @@ func (w *Writer) syncEverySecond(state *writerState) {
 	if err := state.file.Sync(); err != nil {
 		w.fail(state, fmt.Errorf("sync WAL: %w", err))
 	} else {
-		w.syncedLSN.Store(w.lastLSN.Load())
+		w.markSynced(w.lastLSN.Load())
 	}
 }
 
@@ -373,7 +374,7 @@ func (w *Writer) handleBatch(batch []writerRequest, state *writerState) {
 				}
 			}
 		} else {
-			w.syncedLSN.Store(w.lastLSN.Load())
+			w.markSynced(w.lastLSN.Load())
 		}
 	}
 	for index, request := range batch {
@@ -442,7 +443,7 @@ func (w *Writer) appendReplicated(record Record, state *writerState) error {
 	}
 	w.lastLSN.Store(record.LSN)
 	if w.config.Sync != SyncNo {
-		w.syncedLSN.Store(record.LSN)
+		w.markSynced(record.LSN)
 	}
 	return nil
 }
@@ -520,7 +521,7 @@ func (w *Writer) closeForRotation(state *writerState) error {
 		if err := state.file.Sync(); err != nil {
 			return err
 		}
-		w.syncedLSN.Store(w.lastLSN.Load())
+		w.markSynced(w.lastLSN.Load())
 	}
 	return state.file.Close()
 }
@@ -576,7 +577,7 @@ func (w *Writer) handleClose(state *writerState) error {
 		err = syncErr
 	}
 	if err == nil {
-		w.syncedLSN.Store(w.lastLSN.Load())
+		w.markSynced(w.lastLSN.Load())
 	} else {
 		w.fail(state, err)
 	}
@@ -614,11 +615,14 @@ func (w *Writer) preparePrune(state *writerState, uptoLSN uint64) error {
 	}
 	// The active segment holds acknowledged records, so its fsync failing is the same terminal condition as a failed
 	// batch sync. Snapshot-file and directory sync failures below stay retryable because the WAL remains authoritative.
+	// The sync time advances, but not the watermark: under SyncNo, segments rotated earlier were never synced, so this
+	// fsync covers only the active one. The watermark moves to the snapshot's LSN below, once that is durable.
 	if state.file != nil {
 		if err := state.file.Sync(); err != nil {
 			w.fail(state, fmt.Errorf("sync WAL before prune: %w", err))
 			return state.terminalErr
 		}
+		w.lastSync.Store(time.Now().UnixNano())
 	}
 	// Re-sync the published snapshot and directory before deleting its backing WAL.
 	if err := syncSnapshot(w.config.Dir, uptoLSN); err != nil {

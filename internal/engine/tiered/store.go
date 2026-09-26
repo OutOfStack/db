@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	stdsync "sync"
+	"time"
 
 	"github.com/OutOfStack/db/internal/wal"
 )
@@ -204,6 +205,8 @@ type store struct {
 	// terminalErr latches the first failure after which the store can no longer promise durability: an fsync that
 	// failed, or a partial record it could not truncate away. It is guarded by the engine lock like the maps above.
 	terminalErr error
+	// lastSync is when an fsync of the active segment last succeeded; zero before the first, and always under SyncNo.
+	lastSync time.Time
 }
 
 // fail latches err as the store's terminal error (first failure wins) and returns the latched error. Once set, every
@@ -495,6 +498,7 @@ func (s *store) syncActive() error {
 	if err := s.syncFile(file); err != nil {
 		return s.fail(fmt.Errorf("sync segment: %w", err))
 	}
+	s.lastSync = time.Now()
 	return nil
 }
 
@@ -507,13 +511,15 @@ func (s *store) syncIfAlways() error {
 	return s.syncActive()
 }
 
+// close waits for pinned readers, makes every segment durable, and closes them. A clean shutdown fsyncs under every
+// policy, SyncNo included, as the WAL's does: a stop that exits 0 leaves nothing that exists only in the page cache.
 func (s *store) close() error {
 	s.pinMu.Lock()
 	for len(s.pins) > 0 {
 		s.cond.Wait()
 	}
 	defer s.pinMu.Unlock()
-	firstErr := s.syncActive()
+	firstErr := s.syncAll()
 	if s.terminalErr != nil {
 		// The final close reports the latched failure so the process exit code reflects it, whatever this sync did.
 		firstErr = s.terminalErr
@@ -524,6 +530,20 @@ func (s *store) close() error {
 		}
 	}
 	return firstErr
+}
+
+// syncAll fsyncs every segment and then the directory. Under SyncNo neither sealed segments nor the directory entries
+// of rotated ones were ever synced, so the active segment alone would not cover them.
+func (s *store) syncAll() error {
+	for _, num := range s.segments() {
+		if err := s.syncFile(s.readers[num]); err != nil {
+			return fmt.Errorf("sync segment %d during close: %w", num, err)
+		}
+	}
+	if err := wal.SyncDirectory(s.dir); err != nil {
+		return fmt.Errorf("sync data directory during close: %w", err)
+	}
+	return nil
 }
 
 func segFilename(num uint32) string {

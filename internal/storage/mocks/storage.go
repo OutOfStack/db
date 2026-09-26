@@ -72,17 +72,18 @@ func (mr *MockEngineMockRecorder) Get(ctx, table, key any) *gomock.Call {
 }
 
 // Keys mocks base method.
-func (m *MockEngine) Keys(ctx context.Context, table string) []string {
+func (m *MockEngine) Keys(ctx context.Context, table string, maxBytes int) ([]string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Keys", ctx, table)
+	ret := m.ctrl.Call(m, "Keys", ctx, table, maxBytes)
 	ret0, _ := ret[0].([]string)
-	return ret0
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // Keys indicates an expected call of Keys.
-func (mr *MockEngineMockRecorder) Keys(ctx, table any) *gomock.Call {
+func (mr *MockEngineMockRecorder) Keys(ctx, table, maxBytes any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Keys", reflect.TypeOf((*MockEngine)(nil).Keys), ctx, table)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Keys", reflect.TypeOf((*MockEngine)(nil).Keys), ctx, table, maxBytes)
 }
 
 // Range mocks base method.
@@ -138,17 +139,18 @@ func (mr *MockEngineMockRecorder) TableExists(ctx, table any) *gomock.Call {
 }
 
 // Tables mocks base method.
-func (m *MockEngine) Tables(ctx context.Context) []string {
+func (m *MockEngine) Tables(ctx context.Context, maxBytes int) ([]string, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Tables", ctx)
+	ret := m.ctrl.Call(m, "Tables", ctx, maxBytes)
 	ret0, _ := ret[0].([]string)
-	return ret0
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // Tables indicates an expected call of Tables.
-func (mr *MockEngineMockRecorder) Tables(ctx any) *gomock.Call {
+func (mr *MockEngineMockRecorder) Tables(ctx, maxBytes any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tables", reflect.TypeOf((*MockEngine)(nil).Tables), ctx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Tables", reflect.TypeOf((*MockEngine)(nil).Tables), ctx, maxBytes)
 }
 
 // Update mocks base method.
@@ -294,4 +296,42 @@ func (m *MockSnapshotSource) Range(fn func(string, string, string) bool) {
 func (mr *MockSnapshotSourceMockRecorder) Range(fn any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Range", reflect.TypeOf((*MockSnapshotSource)(nil).Range), fn)
+}
+
+// MockstatusProvider is a mock of statusProvider interface.
+type MockstatusProvider struct {
+	ctrl     *gomock.Controller
+	recorder *MockstatusProviderMockRecorder
+	isgomock struct{}
+}
+
+// MockstatusProviderMockRecorder is the mock recorder for MockstatusProvider.
+type MockstatusProviderMockRecorder struct {
+	mock *MockstatusProvider
+}
+
+// NewMockstatusProvider creates a new mock instance.
+func NewMockstatusProvider(ctrl *gomock.Controller) *MockstatusProvider {
+	mock := &MockstatusProvider{ctrl: ctrl}
+	mock.recorder = &MockstatusProviderMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockstatusProvider) EXPECT() *MockstatusProviderMockRecorder {
+	return m.recorder
+}
+
+// Status mocks base method.
+func (m *MockstatusProvider) Status() wal.Status {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Status")
+	ret0, _ := ret[0].(wal.Status)
+	return ret0
+}
+
+// Status indicates an expected call of Status.
+func (mr *MockstatusProviderMockRecorder) Status() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Status", reflect.TypeOf((*MockstatusProvider)(nil).Status))
 }

@@ -20,6 +20,7 @@ import (
 	"github.com/OutOfStack/db/internal/engine/tiered"
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/parser"
+	"github.com/OutOfStack/db/internal/status"
 	"github.com/OutOfStack/db/internal/storage"
 	"github.com/OutOfStack/db/internal/version"
 	"github.com/OutOfStack/db/internal/wal"
@@ -125,8 +126,53 @@ func run(cfg *config.ServerConfig, logger *slog.Logger, startup startupOptions) 
 	if walWriter != nil {
 		defer func() { err = errors.Join(err, walWriter.Close()) }()
 	}
+	// The manifest is written only once recovery has accepted the files, so it never describes a directory whose contents
+	// this build refused.
+	if lock != nil {
+		manifest := datadir.NewManifest(cfg.Engine.Type, syncPolicy(cfg), version.Get().Release)
+		if err = datadir.WriteManifest(dataDirectory(cfg), manifest); err != nil {
+			return err
+		}
+	}
 
-	var options []storage.Option
+	store := storage.New(dbEngine, storageOptions(cfg, walWriter, snapshotLSN)...)
+	repl, err := setupReplication(cfg, logger, store, walWriter, unverifiedHistory)
+	if err != nil {
+		return err
+	}
+	comp := newCompute(cfg, logger, store, repl)
+	return serve(cfg, logger, comp, store, walWriter, repl, snapshotLSN)
+}
+
+// dataDirectory returns the directory the configured engine keeps its files in.
+func dataDirectory(cfg *config.ServerConfig) string {
+	if cfg.Engine.Type == engine.TypeTiered {
+		return cfg.Engine.DataDir
+	}
+	return cfg.WAL.DataDir
+}
+
+// syncPolicy returns the fsync policy of whichever durable store the configuration selects.
+func syncPolicy(cfg *config.ServerConfig) wal.SyncPolicy {
+	if cfg.Engine.Type == engine.TypeTiered {
+		return cfg.Engine.Sync
+	}
+	return cfg.WAL.Sync
+}
+
+// durability is what STATUS reports: the sync policy of a durable configuration, or ephemeral.
+func durability(cfg *config.ServerConfig) string {
+	if cfg.Engine.Type == engine.TypeInMemory && !cfg.WAL.Enabled {
+		return status.DurabilityEphemeral
+	}
+	return string(syncPolicy(cfg))
+}
+
+func storageOptions(cfg *config.ServerConfig, walWriter *wal.Writer, snapshotLSN uint64) []storage.Option {
+	options := []storage.Option{
+		storage.WithListLimit(cfg.Network.MaxMessageSizeKB * 1024),
+		storage.WithSnapshotLSN(snapshotLSN),
+	}
 	if walWriter != nil {
 		options = append(options, storage.WithWAL(walWriter))
 	}
@@ -135,29 +181,32 @@ func run(cfg *config.ServerConfig, logger *slog.Logger, startup startupOptions) 
 	if cfg.Replication.Role == config.RoleStandby {
 		options = append(options, storage.WithReadOnly(true))
 	}
-	store := storage.New(dbEngine, options...)
+	return options
+}
 
-	repl, err := setupReplication(cfg, logger, store, walWriter, unverifiedHistory)
-	if err != nil {
-		return err
-	}
-
-	var computeOptions []compute.Option
+func newCompute(
+	cfg *config.ServerConfig,
+	logger *slog.Logger,
+	store *storage.Storage,
+	repl *replicationRuntime,
+) *compute.Compute {
+	var role func() string
+	var options []compute.Option
 	if repl != nil {
-		computeOptions = append(computeOptions,
+		role = repl.admin.currentRole
+		options = append(options,
 			compute.WithAdmin(repl.admin),
 			compute.WithPromoteEnabled(cfg.Replication.AllowRemotePromote))
 	}
-	comp := compute.New(parser.New(), store, logger, computeOptions...)
-	return serve(cfg, logger, comp, store, walWriter, repl, snapshotLSN)
+	options = append(options, compute.WithStatus(status.New(cfg.Engine.Type, durability(cfg), store, role)))
+	return compute.New(parser.New(), store, logger, options...)
 }
 
 func prepareDataDir(cfg *config.ServerConfig, allowEphemeralOverData bool) (*datadir.Lock, error) {
-	dir := cfg.WAL.DataDir
+	dir := dataDirectory(cfg)
 	expected := datadir.KindWAL
 	durable := cfg.WAL.Enabled
 	if cfg.Engine.Type == engine.TypeTiered {
-		dir = cfg.Engine.DataDir
 		expected = datadir.KindTiered
 		durable = true
 	}
@@ -189,6 +238,15 @@ func prepareDataDir(cfg *config.ServerConfig, allowEphemeralOverData bool) (*dat
 			fmt.Errorf("configured %s storage but found %s database files in %q", expected, kind, dir),
 			lock.Close(),
 		)
+	}
+	// The manifest is checked even when the directory holds no database files yet: it is how a restored copy says which
+	// engine it belongs to before any of its files are opened.
+	manifest, found, err := datadir.ReadManifest(dir)
+	if err == nil && found {
+		err = datadir.CheckManifest(dir, manifest, cfg.Engine.Type)
+	}
+	if err != nil {
+		return nil, errors.Join(err, lock.Close())
 	}
 	return lock, nil
 }
@@ -331,7 +389,7 @@ func serve(
 
 func roleName(role string) string {
 	if role == config.RoleStandalone {
-		return "standalone"
+		return status.RoleStandalone
 	}
 	return role
 }
