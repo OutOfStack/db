@@ -16,13 +16,13 @@ import (
 var (
 	// ErrNotFound is the error returned when a key is not found
 	ErrNotFound = errors.New("not found")
-	// ErrReadOnly is returned for mutating commands on a replication standby. It maps to the "ERR readonly" wire reply so
-	// a pool client can re-route the write to a master.
-	ErrReadOnly = errors.New("readonly")
+	// ErrReadOnly is returned for mutating commands on a replication standby. It maps to the "READONLY readonly" wire
+	// reply so a pool client can re-route the write to a master.
+	ErrReadOnly = protocol.NewError(protocol.CodeReadOnly, "readonly")
 	// ErrTerminal is returned for every command once the storage has been fenced: its state can no longer be trusted
 	// (a resync that failed part-way, or a replication history that diverged from the master's) and only a restart —
 	// with a reseed where the error says so — clears it.
-	ErrTerminal = errors.New("storage is in a terminal state")
+	ErrTerminal = protocol.NewError(protocol.CodeUnavailable, "storage is in a terminal state")
 )
 
 // Engine is an interface for a storage engine
@@ -299,7 +299,7 @@ func (s *Storage) incr(ctx context.Context, args []string) (protocol.Reply, erro
 		return protocol.Reply{}, err
 	}
 	if delta.Kind != protocol.KindInt && delta.Kind != protocol.KindFloat {
-		return protocol.Reply{}, fmt.Errorf("INCR delta must be int or float, got %s", delta.Kind)
+		return protocol.Reply{}, protocol.NewError(protocol.CodeArgument, "INCR delta must be int or float, got %s", delta.Kind)
 	}
 	return s.mutation(ctx, wal.CommandIncr, []string{args[0], args[1], protocol.Encode(delta)})
 }

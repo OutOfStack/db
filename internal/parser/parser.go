@@ -1,9 +1,9 @@
 package parser
 
 import (
-	"errors"
-	"fmt"
 	"strings"
+
+	"github.com/OutOfStack/db/internal/protocol"
 )
 
 // maxTableNameLen is the maximum allowed length of a table name
@@ -91,28 +91,28 @@ func New() *Parser {
 func (p *Parser) Parse(cmd string, args []string) (string, []string, error) {
 	cmd = strings.ToUpper(strings.TrimSpace(cmd))
 	if cmd == "" {
-		return "", nil, errors.New("empty input")
+		return "", nil, protocol.NewError(protocol.CodeUnknownCommand, "empty input")
 	}
 
 	spec, ok := commands[cmd]
 	if !ok {
-		return "", nil, errors.New("unknown command: " + cmd)
+		return "", nil, protocol.NewError(protocol.CodeUnknownCommand, "unknown command: %s", cmd)
 	}
 	if len(args) < spec.args || len(args) > spec.args+spec.optional {
-		return "", nil, fmt.Errorf("%s requires %d arguments: %s", cmd, spec.args, spec.usage)
+		return "", nil, protocol.NewError(protocol.CodeArity, "%s requires %d arguments: %s", cmd, spec.args, spec.usage)
 	}
 
 	if spec.args == 0 || spec.admin {
 		return cmd, args, nil
 	}
 	if len(args[0]) > maxTableNameLen {
-		return "", nil, errors.New("table name too long")
+		return "", nil, protocol.NewError(protocol.CodeTooLarge, "table name too long")
 	}
 	if args[0] == "" {
-		return "", nil, errors.New("table cannot be empty")
+		return "", nil, protocol.NewError(protocol.CodeArgument, "table cannot be empty")
 	}
 	if spec.args >= 2 && args[1] == "" {
-		return "", nil, errors.New("key cannot be empty")
+		return "", nil, protocol.NewError(protocol.CodeArgument, "key cannot be empty")
 	}
 
 	return cmd, args, nil

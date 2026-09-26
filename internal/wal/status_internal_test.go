@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,10 +23,15 @@ func TestSyncFailureLatchesReadiness(t *testing.T) {
 	require.False(t, status.Ready)
 	require.True(t, status.Degraded)
 	require.ErrorIs(t, status.TerminalError, os.ErrClosed)
+	require.ErrorIs(t, status.TerminalError, ErrTerminal)
 	require.Equal(t, uint64(3), status.SyncedLSN)
 	result := make(chan writerResult, 1)
 	writer.handleBatch([]writerRequest{{result: result}}, &state)
-	require.ErrorIs(t, (<-result).err, os.ErrClosed)
+	// A later append is refused as UNAVAILABLE, the code a client sees for a node it cannot write to, while the I/O
+	// error that caused it stays reachable.
+	appendErr := (<-result).err
+	require.ErrorIs(t, appendErr, os.ErrClosed)
+	require.Equal(t, protocol.CodeUnavailable, protocol.CodeOf(appendErr))
 	first := status.TerminalError
 	writer.fail(&state, errors.New("later failure"))
 	require.Equal(t, first, writer.Status().TerminalError)

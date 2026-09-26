@@ -13,9 +13,13 @@ import (
 )
 
 const (
-	checksumSize  = 4
-	lsnSize       = 8
-	maxRecordSize = 64 << 20
+	checksumSize = 4
+	lsnSize      = 8
+
+	// MaxRecordSize is the largest record this format holds. The recovery reader will not decode a larger one, so both
+	// append paths refuse it with protocol.CodeTooLarge rather than persisting a log this build cannot replay. It is
+	// exported because it is a limit the compatibility contract names, and because tests build a record just past it.
+	MaxRecordSize = 64 << 20
 
 	// CommandSet and CommandDel are the mutating operations accepted by the WAL.
 	CommandSet = "SET"
@@ -79,7 +83,7 @@ func readRecord(reader *bufio.Reader) (Record, error) {
 		return Record{}, recordReadError("read LSN", err)
 	}
 
-	command, args, err := protocol.ReadCommand(reader, maxRecordSize)
+	command, args, err := protocol.ReadCommand(reader, MaxRecordSize)
 	if err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return Record{}, fmt.Errorf("%w: read command: %w", ErrPartialRecord, err)

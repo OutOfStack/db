@@ -269,7 +269,7 @@ func (s *TCPServer) readCommand(conn net.Conn, reader *bufio.Reader) (string, []
 	}
 	s.logger.Error("Error reading command from connection", "address", conn.RemoteAddr())
 	s.logger.Debug("Protocol error details", "error", err)
-	if writeErr := s.writeReply(conn, protocol.Error(err.Error())); writeErr != nil {
+	if writeErr := s.writeReply(conn, protocol.ErrorFor(err)); writeErr != nil {
 		s.logger.Error("Failed to send protocol error", "error", writeErr)
 		return "", nil, false
 	}

@@ -39,6 +39,9 @@ Generally available, supported for production use:
 - The documented RESP2 command subset and typed literals
 - Deployment on loopback or an explicitly trusted private network
 
+What a v1.x release promises about each of these — the Go API, the wire subset and error codes, the configuration, and
+the on-disk formats — is written down in [COMPATIBILITY.md](COMPATIBILITY.md).
+
 Preview — limited support, marked by a startup warning:
 
 - The `tiered` engine
@@ -61,7 +64,7 @@ Preview caveats:
   `-clear-unverified-history`. Divergence is otherwise detected only by LSN comparison, so a master that rolls back
   and then advances past a standby's LSN before it reconnects is not detected — the replication GA timeline protocol
   closes that gap
-- The tiered engine latches its first fsync failure: later writes are refused with `ERR tiered engine is in a
+- The tiered engine latches its first fsync failure: later writes are refused with `UNAVAILABLE tiered engine is in a
   terminal state`, reads continue, and the process exits nonzero on shutdown. A checksum mismatch in a segment is
   corruption — a cold read of that key fails while other keys stay readable, and a restart refuses to start until the
   file is restored. Only a record header cut short at the end of the newest segment is truncated as a crash tail; a
@@ -199,7 +202,7 @@ HGET users u1 age
 
 Running a typed command against a value of another type is an error and changes nothing:
 ```
-ERR wrong type: key holds array, INCR requires int or float
+WRONGTYPE wrong type: key holds array, INCR requires int or float
 ```
 
 ## Configuration
@@ -237,7 +240,7 @@ with `wal.enabled` or replication — the server refuses that combination at sta
 
 - **engine.data_dir**: Directory for the tiered segment store
 - **engine.max_memory**: MiB of hot values kept in RAM (the LRU budget)
-- **engine.max_storage**: MiB ceiling on live data; `SET` past it returns `ERR storage full`
+- **engine.max_storage**: MiB ceiling on live data; `SET` past it returns `TOOLARGE storage full`
 - **engine.sync**: Fsync policy for segments (`always`, `everysec`, or `no`)
 - **engine.segment_size**: Segment file size in MiB
 - **engine.compaction_threshold**: Reclaim a sealed segment once this fraction of it is dead bytes
@@ -468,6 +471,7 @@ make run-cli
 - `--config`: Path to configuration file
 - `--address`: Database server address (overrides config)
 - `--timeout`: Connection idle timeout (overrides config)
+- `--version`: Print release, commit, protocol and storage format versions, then exit
 
 ### Interactive session example:
 ```
@@ -552,12 +556,16 @@ c, err := client.New(
 )
 ```
 
-Error handling:
-- `client.ErrNotFound` — sentinel returned by `Get`/`Del` for missing keys (check with `errors.Is`)
+Error handling. Three conditions have exported sentinels, because only these are usually acted on rather than reported;
+everything else is a `*client.ServerError` whose `Code` is one of the stable [error codes](#error-handling):
+- `client.ErrNotFound` — returned by `Get`/`Del` for missing keys (check with `errors.Is`)
 - `client.ErrOutcomeUnknown` — the command reached a server but no reply came back, so whether it was applied cannot be
   determined (check with `errors.Is`)
-- `*client.ServerError` — any other error message returned by the server (check with `errors.As`)
-- `Raw(ctx, command)` — escape hatch that sends a raw command line and returns the response text as is
+- `client.ErrWrongType` — the key holds another type, or the arithmetic does not fit it (check with `errors.Is`)
+- `*client.ServerError` — every other server response; match with `errors.As` and branch on `.Code`, never on the
+  message text
+- `Raw(ctx, command)` — escape hatch that sends a raw command line and returns the reply as text; an error reply comes
+  back as a `*client.ServerError` rather than as text
 
 Delivery semantics: a command that fails is never re-sent once a complete frame may have reached a server, because
 repeating `Incr`, `Append` or `HSet` would apply it twice. A command the client could not finish writing is retried — the
@@ -570,6 +578,17 @@ have been applied, so that error matches both `ErrOutcomeUnknown` and `context.C
 `New` validates configuration but does not connect: the first command opens the connection under its own context, so an
 unreachable server surfaces there rather than at construction. The client is safe for concurrent use, and `Close` is
 idempotent and final — it interrupts commands in flight and later calls fail rather than reconnecting.
+
+Note that `Set` takes a typed literal, parsed server-side, not an unconditionally string-typed value — the int 42 and
+the string `01234` are set like this:
+
+```go
+err = c.Set(ctx, "users", "age", "42")      // int 42
+err = c.Set(ctx, "users", "zip", `"01234"`) // string 01234, quoted so it is not read as a number
+```
+
+The full contract these guarantees belong to — the frozen wire subset, error codes, storage formats, and what a v1.x
+release promises about each — is in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Building
 
@@ -648,15 +667,37 @@ command syntax shown above and encodes it into RESP on the wire.
   - Bulk strings (`$5\r\nAlice\r\n`) for values, and the null bulk string (`$-1\r\n`) for a missing key
   - Arrays (`*<n>\r\n…`) for list replies such as `TABLES` and `KEYS`
   - Integers (`:<n>\r\n`)
-  - Errors (`-ERR <message>\r\n`)
-- Messages are bounded by the configured `max_message_size`; oversized requests are rejected.
+  - Errors (`-<CODE> <message>\r\n`), where `<CODE>` is one of the stable codes listed under
+    [Error Handling](#error-handling)
+- The configured `max_message_size` bounds *requests* a server accepts; oversized ones are rejected with `TOOLARGE`.
+  Replies are not bounded by the server's limit — a client is protected by its own, refusing to decode a larger reply
+  (see [COMPATIBILITY.md](COMPATIBILITY.md)).
+- Arguments are binary-safe: RESP framing is length-prefixed, so a value may contain spaces, CR, LF and NUL.
+- Null arrays (`*-1\r\n`) are outside the supported subset — an empty result is an empty array (`*0\r\n`). The exact
+  subset, and what a v1.x release promises about it, is in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Error Handling
 
-- Invalid commands return error messages
-- Missing arguments return error messages
-- Too many arguments return error messages
-- Unknown commands return error messages
+Every error reply starts with a stable code token, so clients branch on the code rather than on the message text (which
+is not part of the compatibility promise). The Go client exposes it as `ServerError.Code`.
+
+| Code | Meaning |
+|------|---------|
+| `ERR` | unclassified failure |
+| `PROTOCOL` | malformed request frame; the connection is closed after the reply |
+| `UNKNOWNCMD` | no such command |
+| `ARITY` | wrong number of arguments |
+| `ARGUMENT` | an argument the command cannot interpret (empty table or key, unparsable literal, non-numeric `INCR` delta) |
+| `TOOLARGE` | past a configured or format limit (table name, message size, tiered storage) |
+| `WRONGTYPE` | the key holds another type, or the arithmetic does not fit it |
+| `READONLY` | mutation sent to a replication standby |
+| `UNAVAILABLE` | the server cannot serve this in its current state |
+
+A code a client does not recognize must be treated as `ERR`: within v1.x a code never changes meaning, but a condition
+that reports `ERR` today may later be given a narrower one. See [COMPATIBILITY.md](COMPATIBILITY.md).
+
+Beyond command errors:
+
 - Network errors are logged and handled gracefully
 - Server implements panic recovery for client handlers
 - Connection limit exceeded: new connections are gracefully rejected with logging

@@ -31,7 +31,7 @@ func TestClientSecurityContract(t *testing.T) {
 	srv, err := network.NewTCPServer("127.0.0.1:0", logger, network.WithServerMaxConnections(1))
 	require.NoError(t, err)
 	done := make(chan error, 1)
-	go func() { done <- srv.Serve(requestHandler(c)) }()
+	go func() { done <- srv.Serve(c.Handle) }()
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()

@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"maps"
 	"math"
@@ -274,7 +273,7 @@ func ParseLiteral(s string) (Value, error) {
 func bareString(s string) (Value, error) {
 	switch s[0] {
 	case '[', '{', '"':
-		return Value{}, fmt.Errorf("invalid value literal: %s", s)
+		return Value{}, NewError(CodeArgument, "invalid value literal: %s", s)
 	default:
 		return StringValue(s), nil
 	}

@@ -64,6 +64,20 @@ func New(parser Parser, storage Storage, logger *slog.Logger, options ...Option)
 	return c
 }
 
+// Handle runs a decoded request and maps its outcome onto the wire contract: a missing key is a null bulk string, and
+// every other failure is an error reply carrying the stable code its error declares (protocol.CodeOf). It is the only
+// place errors become replies, so a command's documented error code cannot depend on which binary serves it.
+func (c *Compute) Handle(ctx context.Context, cmd string, args []string) protocol.Reply {
+	reply, err := c.HandleRequest(ctx, cmd, args)
+	if err == nil {
+		return reply
+	}
+	if errors.Is(err, storage.ErrNotFound) {
+		return protocol.NullBulkString()
+	}
+	return protocol.ErrorFor(err)
+}
+
 // HandleRequest validates and executes a decoded request.
 func (c *Compute) HandleRequest(ctx context.Context, cmd string, args []string) (reply protocol.Reply, err error) {
 	started := time.Now()
@@ -117,19 +131,20 @@ func (c *Compute) handleAdmin(ctx context.Context, cmd string, args []string) (p
 	switch cmd {
 	case commandPromote:
 		if c.admin == nil {
-			return protocol.Reply{}, true, errors.New("replication not enabled")
+			return protocol.Reply{}, true, protocol.NewError(protocol.CodeUnavailable, "replication not enabled")
 		}
 		if !c.promoteEnabled {
-			return protocol.Reply{}, true, errors.New("PROMOTE is disabled; set replication.allow_remote_promote to enable it")
+			return protocol.Reply{}, true, protocol.NewError(protocol.CodeUnavailable,
+				"PROMOTE is disabled; set replication.allow_remote_promote to enable it")
 		}
 		reply, err := c.admin.Promote(ctx)
 		return reply, true, err
 	case commandReplication:
 		if len(args) != 1 || !strings.EqualFold(args[0], "STATUS") {
-			return protocol.Reply{}, true, errors.New("usage: REPLICATION STATUS")
+			return protocol.Reply{}, true, protocol.NewError(protocol.CodeArgument, "usage: REPLICATION STATUS")
 		}
 		if c.admin == nil {
-			return protocol.Reply{}, true, errors.New("replication not enabled")
+			return protocol.Reply{}, true, protocol.NewError(protocol.CodeUnavailable, "replication not enabled")
 		}
 		reply, err := c.admin.Status(ctx)
 		return reply, true, err
