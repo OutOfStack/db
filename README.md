@@ -26,6 +26,8 @@ The project consists of three main components:
 - Durability: write-ahead log with `always`/`everysec`/`no` fsync policies, periodic snapshots, and crash recovery that
   truncates a torn tail
 - Replication (preview): asynchronous master/standby WAL shipping with manual `PROMOTE`
+- Operations: `PING` and `STATUS` health checks, self-describing data directories, and a documented offline backup and
+  restore procedure that CI drills on every push (see [docs/operations.md](docs/operations.md))
 - Connection limiting to prevent resource exhaustion
 - **Master/Standby Connection Pooling** with read failover and retry; writes reroute only after a manual promotion
 - Configurable server selection strategies (master_first, round_robin, random)
@@ -155,11 +157,13 @@ EXISTS <table>
 ```
 
 ### KEYS
-List all keys in a table in sorted order. A missing table returns an empty list. List responses are subject to the
-configured client and server message size limits; pagination is not currently supported.
+List all keys in a table in sorted order. A missing table returns an empty list.
 ```
 KEYS <table>
 ```
+A `TABLES` or `KEYS` listing whose reply would exceed the server's `network.max_message_size` is refused with
+`TOOLARGE` rather than truncated, and the server stops collecting names as soon as it passes the limit. There is no
+pagination; raise the limit (on the server and the client) to list larger tables.
 
 ### TYPE
 Report the type of a stored value (`string`, `int`, `float`, `bool`, `array`, `map`):
@@ -203,6 +207,22 @@ HGET users u1 age
 Running a typed command against a value of another type is an error and changes nothing:
 ```
 WRONGTYPE wrong type: key holds array, INCR requires int or float
+```
+
+### PING
+Liveness check: replies `PONG` whenever the server is accepting commands, including when its storage is fenced.
+```
+PING
+```
+
+### STATUS
+Readiness check for one server: a fixed list of field/value pairs — `ready`, `state` (`ok`, `degraded`, `terminal`),
+`error`, `role`, `engine`, `durability`, the applied and synced LSNs, the newest snapshot's LSN, the times of the last
+fsync and snapshot, and the release and format versions. It carries no per-key data and its size does not depend on
+the dataset, so it is safe to poll. [docs/operations.md](docs/operations.md#health-checks) describes every field. A
+connection pool refuses `STATUS`, because it cannot say which server would answer; connect to the server directly.
+```
+STATUS
 ```
 
 ## Configuration
@@ -335,9 +355,15 @@ formats are refused; there is no automatic migration. A damaged or incomplete sn
 verified snapshot plus the retained WAL (or the WAL alone) covers its state; otherwise startup fails.
 
 Snapshot or prune failures are logged as degraded maintenance and retried on the next snapshot interval. WAL appends
-continue unless an append or WAL sync failure has latched a terminal error. Internal storage/WAL health exposes these
-states separately, along with the latest written LSN and the observed sync watermark. For `everysec` and `no`, unsynced
-records may survive a process crash, but their survival is not a durability guarantee.
+continue unless an append or WAL sync failure has latched a terminal error. `STATUS` reports these states separately,
+along with the latest written LSN and the observed sync watermark. For `everysec` and `no`, unsynced records may survive
+a process crash, but their survival is not a durability guarantee.
+
+A durable data directory is self-describing: the server writes a `MANIFEST` naming its engine, format versions and sync
+policy, and refuses at startup a directory whose manifest does not match the configuration. Backups are offline — stop
+the server cleanly and copy the whole directory. [docs/operations.md](docs/operations.md) covers backup and restore,
+what each sync policy guarantees after a crash, corruption, upgrades and rollback, and capacity limits. There is no upgrade path
+from pre-v1 data: start v1 on a fresh directory or a backup taken from a v1 server.
 
 ### Using make:
 ```bash
@@ -471,6 +497,7 @@ make run-cli
 - `--config`: Path to configuration file
 - `--address`: Database server address (overrides config)
 - `--timeout`: Connection idle timeout (overrides config)
+- `-q`: Quiet: print only errors, for scripts that rely on the exit status
 - `--version`: Print release, commit, protocol and storage format versions, then exit
 
 ### Interactive session example:
@@ -489,6 +516,8 @@ Available commands:
   APPEND table key value
   HSET table key field value
   HGET table key field
+  PING
+  STATUS
 Type 'exit' to quit
 
 > SET users name Alice
@@ -506,11 +535,17 @@ OK
 > exit
 ```
 
-The CLI also reads commands from stdin, skipping blank and `#` lines, so a prepared script runs end to end.
-[`examples/commands.txt`](examples/commands.txt) covers every command:
+The CLI also reads commands from stdin, skipping blank and `#` lines, so a prepared script runs end to end. With piped
+input it prints no banner or prompt — only the replies on stdout, and errors on stderr prefixed with their line number.
+An error reply is reported and the script continues; a line the CLI cannot parse, or a lost connection, stops it. The
+exit status is `0` only when every command succeeded, `1` when any failed, and `2` for invalid flags or configuration.
+
+[`examples/smoke.txt`](examples/smoke.txt) runs every standalone command and must exit `0`;
+[`examples/errors.txt`](examples/errors.txt) triggers one failure of each kind and exits `1`:
 
 ```bash
-./bin/db-cli < examples/commands.txt
+./bin/db-cli -q < examples/smoke.txt && echo ok
+./bin/db-cli < examples/errors.txt; echo "exit status $?"
 ```
 
 ## Go Client Library
@@ -612,13 +647,15 @@ go build -o bin/db-cli ./cmd/db-cli
 │   │   └── main.go
 │   └── db-cli/                  # CLI client
 │       └── main.go
-├── examples/commands.txt        # Runnable command reference for the CLI
+├── examples/                    # CLI scripts: smoke.txt (must exit 0) and errors.txt (fails on purpose)
+├── scripts/restore-drill.sh     # Offline backup and restore drill, run in CI
 ├── config.client.example.yaml   # Example client configuration
 ├── config.server.example.yaml   # Example server configuration
 ├── example-pool-config.yaml     # Example pool configuration
 └── internal/                    # Internal packages
     ├── compute/                 # Request handling and command execution
     ├── config/                  # Configuration management
+    ├── datadir/                 # Data directory lock, file detection and MANIFEST
     ├── engine/                  # In-memory storage engine
     │   └── tiered/              # Memory/disk engine: segments, keydir, LRU, compaction
     ├── network/                 # TCP networking layer
@@ -626,6 +663,7 @@ go build -o bin/db-cli ./cmd/db-cli
     ├── pool/                    # Connection pooling and failover
     ├── protocol/                # RESP2 framing and the typed-value codec
     ├── replication/             # Master/standby WAL streaming
+    ├── status/                  # The STATUS reply
     ├── storage/                 # Storage layer
     └── wal/                     # Write-ahead log and snapshots
 ```
@@ -635,6 +673,11 @@ go build -o bin/db-cli ./cmd/db-cli
 Run tests:
 ```bash
 make test
+```
+
+Run the offline backup and restore drill against freshly built binaries:
+```bash
+make restore-drill
 ```
 
 Run linter:
@@ -669,9 +712,9 @@ command syntax shown above and encodes it into RESP on the wire.
   - Integers (`:<n>\r\n`)
   - Errors (`-<CODE> <message>\r\n`), where `<CODE>` is one of the stable codes listed under
     [Error Handling](#error-handling)
-- The configured `max_message_size` bounds *requests* a server accepts; oversized ones are rejected with `TOOLARGE`.
-  Replies are not bounded by the server's limit — a client is protected by its own, refusing to decode a larger reply
-  (see [COMPATIBILITY.md](COMPATIBILITY.md)).
+- The configured `max_message_size` bounds the *requests* a server accepts and the `TABLES`/`KEYS` listings it replies
+  with; either one past it is refused with `TOOLARGE`. Other replies are not bounded by the server's limit — a client
+  is protected by its own, refusing to decode a larger reply (see [COMPATIBILITY.md](COMPATIBILITY.md)).
 - Arguments are binary-safe: RESP framing is length-prefixed, so a value may contain spaces, CR, LF and NUL.
 - Null arrays (`*-1\r\n`) are outside the supported subset — an empty result is an empty array (`*0\r\n`). The exact
   subset, and what a v1.x release promises about it, is in [COMPATIBILITY.md](COMPATIBILITY.md).
@@ -688,7 +731,7 @@ is not part of the compatibility promise). The Go client exposes it as `ServerEr
 | `UNKNOWNCMD` | no such command |
 | `ARITY` | wrong number of arguments |
 | `ARGUMENT` | an argument the command cannot interpret (empty table or key, unparsable literal, non-numeric `INCR` delta) |
-| `TOOLARGE` | past a configured or format limit (table name, message size, tiered storage) |
+| `TOOLARGE` | past a configured or format limit (table name, message size, a `TABLES`/`KEYS` listing, tiered storage) |
 | `WRONGTYPE` | the key holds another type, or the arithmetic does not fit it |
 | `READONLY` | mutation sent to a replication standby |
 | `UNAVAILABLE` | the server cannot serve this in its current state |

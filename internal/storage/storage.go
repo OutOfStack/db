@@ -7,6 +7,7 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/OutOfStack/db/internal/engine"
 	"github.com/OutOfStack/db/internal/protocol"
@@ -33,9 +34,11 @@ type Engine interface {
 	// Update atomically replaces a value with the result of fn, which sees the current value and whether it exists. It is
 	// the read-modify-write primitive behind INCR, APPEND and HSET.
 	Update(ctx context.Context, table, key string, fn func(old string, exists bool) (string, error)) error
-	Tables(ctx context.Context) []string
+	// Tables and Keys list names in sorted order, refusing with a TOOLARGE error — while collecting, before anything is
+	// sorted — a listing whose reply would exceed maxBytes. maxBytes <= 0 lists without a bound.
+	Tables(ctx context.Context, maxBytes int) ([]string, error)
 	TableExists(ctx context.Context, table string) bool
-	Keys(ctx context.Context, table string) []string
+	Keys(ctx context.Context, table string, maxBytes int) ([]string, error)
 	Range(fn func(table, key, value string) bool)
 	// Replace atomically swaps all state for a resync snapshot on a standby.
 	Replace(entries []engine.Entry)
@@ -65,6 +68,18 @@ func WithWAL(log WAL) Option {
 	return func(storage *Storage) { storage.wal = log }
 }
 
+// WithListLimit bounds the replies of TABLES and KEYS to maxBytes on the wire. A server passes its message-size limit,
+// so a listing a client with the same limit could not decode is refused with TOOLARGE instead of being written.
+func WithListLimit(maxBytes int) Option {
+	return func(storage *Storage) { storage.listLimit = maxBytes }
+}
+
+// WithSnapshotLSN records the LSN of the snapshot recovery loaded, so Status reports it before this process writes a
+// snapshot of its own.
+func WithSnapshotLSN(lsn uint64) Option {
+	return func(storage *Storage) { storage.snapshotLSN = lsn }
+}
+
 // WithReadOnly starts the storage in read-only mode, rejecting every mutating command with ErrReadOnly. Replication
 // standbys use it; Promote lifts it.
 func WithReadOnly(readOnly bool) Option {
@@ -80,10 +95,15 @@ type Storage struct {
 	mu             sync.RWMutex
 	gate           *applyGate
 	readOnly       atomic.Bool
+	listLimit      int
 	snapshotMu     sync.Mutex
 	statusMu       sync.RWMutex
 	maintenanceErr error
 	terminalErr    error
+	// snapshotLSN and lastSnapshot describe the newest snapshot known to be on disk: the one recovery loaded, then each
+	// one this process writes. lastSnapshot stays zero until the first write. Guarded by statusMu.
+	snapshotLSN  uint64
+	lastSnapshot time.Time
 }
 
 // statusProvider is implemented by the WAL writer and by engines that track their own durability (the tiered engine).
@@ -156,12 +176,21 @@ func (s *Storage) Snapshot(
 
 	err := write(ctx, lsn, source)
 	if err == nil {
+		s.recordSnapshot(lsn)
 		err = s.wal.Prune(ctx, lsn)
 	}
 	s.statusMu.Lock()
 	s.maintenanceErr = err
 	s.statusMu.Unlock()
 	return err
+}
+
+// recordSnapshot notes a snapshot that is now published on disk, whether or not the prune after it succeeds.
+func (s *Storage) recordSnapshot(lsn uint64) {
+	s.statusMu.Lock()
+	defer s.statusMu.Unlock()
+	s.snapshotLSN = lsn
+	s.lastSnapshot = time.Now()
 }
 
 // Status reports whether the storage can still serve and persist: it folds in the WAL writer's latch, the engine's own
@@ -182,9 +211,14 @@ func (s *Storage) Status() wal.Status {
 		if status.MaintenanceError == nil {
 			status.MaintenanceError = engineStatus.MaintenanceError
 		}
+		if status.LastSync.IsZero() {
+			status.LastSync = engineStatus.LastSync
+		}
 	}
 	s.statusMu.RLock()
 	defer s.statusMu.RUnlock()
+	status.SnapshotLSN = s.snapshotLSN
+	status.LastSnapshot = s.lastSnapshot
 	if s.maintenanceErr != nil {
 		status.MaintenanceError = s.maintenanceErr
 		status.Degraded = true
@@ -260,14 +294,21 @@ func (s *Storage) Execute(ctx context.Context, cmd string, args []string) (proto
 	case "TYPE":
 		return s.valueType(ctx, args)
 	case "TABLES":
-		return protocol.BulkStringArray(s.engine.Tables(ctx)), nil
+		return listing(s.engine.Tables(ctx, s.listLimit))
 	case "EXISTS":
 		return protocol.BulkString(fmtBool(s.engine.TableExists(ctx, args[0]))), nil
 	case "KEYS":
-		return protocol.BulkStringArray(s.engine.Keys(ctx, args[0])), nil
+		return listing(s.engine.Keys(ctx, args[0], s.listLimit))
 	default:
 		return protocol.Reply{}, nil
 	}
+}
+
+func listing(names []string, err error) (protocol.Reply, error) {
+	if err != nil {
+		return protocol.Reply{}, err
+	}
+	return protocol.BulkStringArray(names), nil
 }
 
 // literalMutation logs a mutation whose last argument is a value literal (SET, APPEND, HSET), replacing the literal
@@ -427,6 +468,7 @@ func (s *Storage) ResetToSnapshot(ctx context.Context, dir string, lsn uint64, e
 		s.Fence(fmt.Errorf("resync at LSN %d failed part-way: %w", lsn, err))
 		return err
 	}
+	s.recordSnapshot(lsn)
 	s.engine.Replace(entries)
 	return nil
 }

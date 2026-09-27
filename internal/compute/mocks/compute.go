@@ -149,3 +149,42 @@ func (mr *MockAdminMockRecorder) Status(ctx any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Status", reflect.TypeOf((*MockAdmin)(nil).Status), ctx)
 }
+
+// MockStatusReporter is a mock of StatusReporter interface.
+type MockStatusReporter struct {
+	ctrl     *gomock.Controller
+	recorder *MockStatusReporterMockRecorder
+	isgomock struct{}
+}
+
+// MockStatusReporterMockRecorder is the mock recorder for MockStatusReporter.
+type MockStatusReporterMockRecorder struct {
+	mock *MockStatusReporter
+}
+
+// NewMockStatusReporter creates a new mock instance.
+func NewMockStatusReporter(ctrl *gomock.Controller) *MockStatusReporter {
+	mock := &MockStatusReporter{ctrl: ctrl}
+	mock.recorder = &MockStatusReporterMockRecorder{mock}
+	return mock
+}
+
+// EXPECT returns an object that allows the caller to indicate expected use.
+func (m *MockStatusReporter) EXPECT() *MockStatusReporterMockRecorder {
+	return m.recorder
+}
+
+// Status mocks base method.
+func (m *MockStatusReporter) Status(ctx context.Context) (protocol.Reply, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Status", ctx)
+	ret0, _ := ret[0].(protocol.Reply)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Status indicates an expected call of Status.
+func (mr *MockStatusReporterMockRecorder) Status(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Status", reflect.TypeOf((*MockStatusReporter)(nil).Status), ctx)
+}

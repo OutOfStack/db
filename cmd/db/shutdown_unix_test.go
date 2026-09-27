@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/OutOfStack/db/internal/config"
+	"github.com/OutOfStack/db/internal/datadir"
+	"github.com/OutOfStack/db/internal/engine"
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/wal"
@@ -76,6 +78,13 @@ func TestSIGTERMPreservesAcknowledgedWrite(t *testing.T) {
 	value, err := dbEngine.Get(t.Context(), "users", "name")
 	require.NoError(t, err)
 	require.Equal(t, "vlad", stored(value))
+
+	// The stopped directory describes itself, which is what makes a copy of it a restorable backup.
+	manifest, found, err := datadir.ReadManifest(dataDir)
+	require.NoError(t, err)
+	require.True(t, found, "a durable server publishes a manifest")
+	require.NoError(t, datadir.CheckManifest(dataDir, manifest, engine.TypeInMemory))
+	require.Equal(t, string(wal.SyncAlways), manifest.Sync)
 }
 
 func TestShutdownHelperProcess(t *testing.T) {

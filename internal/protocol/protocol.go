@@ -79,16 +79,23 @@ func BulkStringArray(values []string) Reply {
 // CommandSize returns the exact number of bytes WriteCommand emits for cmd/args. It lets callers reject an over-limit
 // command before writing it, matching the cumulative-byte limit ReadCommand enforces on the way back in.
 func CommandSize(cmd string, args []string) int {
-	size := 1 + intWidth(len(args)+1) + 2 // *<count>\r\n
-	size += bulkStringSize(cmd)
+	size := ArrayHeaderSize(len(args) + 1)
+	size += BulkStringSize(cmd)
 	for _, arg := range args {
-		size += bulkStringSize(arg)
+		size += BulkStringSize(arg)
 	}
 	return size
 }
 
-func bulkStringSize(value string) int {
+// BulkStringSize returns the exact number of bytes a bulk string holding value occupies on the wire, in a request or a
+// reply alike.
+func BulkStringSize(value string) int {
 	return 1 + intWidth(len(value)) + 2 + len(value) + 2 // $<len>\r\n<value>\r\n
+}
+
+// ArrayHeaderSize returns the exact number of bytes the header of an n-element array occupies on the wire.
+func ArrayHeaderSize(n int) int {
+	return 1 + intWidth(n) + 2 // *<count>\r\n
 }
 
 func intWidth(n int) int {

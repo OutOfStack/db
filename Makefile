@@ -8,7 +8,7 @@ COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)$(shell test -
 VERSION_PKG=github.com/OutOfStack/db/internal/version
 LDFLAGS=-X $(VERSION_PKG).release=$(VERSION) -X $(VERSION_PKG).commit=$(COMMIT)
 
-.PHONY: build build-db build-cli run run-cli test lint clean generate docker-build docker-run
+.PHONY: build build-db build-cli run run-cli test restore-drill lint clean generate docker-build docker-run
 
 build: build-db build-cli
 
@@ -28,6 +28,10 @@ run-cli:
 
 test:
 	go test -v -race ./...
+
+# Offline backup and restore drill against the real binaries (see docs/operations.md). Linux/macOS, needs bash.
+restore-drill: build
+	./scripts/restore-drill.sh
 
 lint:
 	golangci-lint run

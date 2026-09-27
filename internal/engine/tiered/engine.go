@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"maps"
 	"os"
-	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -403,11 +402,12 @@ func (e *Engine) Del(_ context.Context, tbl, key string) error {
 	return e.store.syncIfAlways()
 }
 
-// Tables returns all table names in sorted order.
-func (e *Engine) Tables(_ context.Context) []string {
+// Tables returns all table names in sorted order. A listing whose reply would exceed maxBytes is refused with TOOLARGE
+// (see engine.CollectSorted); maxBytes <= 0 lists without a bound.
+func (e *Engine) Tables(_ context.Context, maxBytes int) ([]string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return slices.Sorted(maps.Keys(e.keydir))
+	return engine.CollectSorted(maps.Keys(e.keydir), maxBytes)
 }
 
 // TableExists reports whether a table has at least one live key.
@@ -418,11 +418,11 @@ func (e *Engine) TableExists(_ context.Context, tbl string) bool {
 	return ok
 }
 
-// Keys returns all keys in a table in sorted order.
-func (e *Engine) Keys(_ context.Context, tbl string) []string {
+// Keys returns all keys in a table in sorted order, bounded by maxBytes like Tables.
+func (e *Engine) Keys(_ context.Context, tbl string, maxBytes int) ([]string, error) {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return slices.Sorted(maps.Keys(e.keydir[tbl]))
+	return engine.CollectSorted(maps.Keys(e.keydir[tbl]), maxBytes)
 }
 
 // Range calls fn for every live value, reading from disk on a cache miss.
@@ -469,13 +469,15 @@ func (e *Engine) keyCount() int {
 
 // Status reports engine health in the same shape the WAL writer uses, so the storage layer and the status command read
 // both engines alike. Ready is false once the engine is closed or has latched a terminal error; Degraded also covers a
-// failed compaction pass. The LSN fields stay zero: the tiered engine keeps no log sequence.
+// failed compaction pass. The LSN and snapshot fields stay zero: the tiered engine keeps no log sequence and writes no
+// snapshots.
 func (e *Engine) Status() wal.Status {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return wal.Status{
 		Ready:            !e.closed && e.store.terminalErr == nil,
 		Degraded:         e.store.terminalErr != nil || e.maintenanceErr != nil,
+		LastSync:         e.store.lastSync,
 		TerminalError:    e.store.terminalErr,
 		MaintenanceError: e.maintenanceErr,
 	}

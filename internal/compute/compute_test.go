@@ -170,3 +170,41 @@ func TestHandleRequest_PromoteRefusedByDefault(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, protocol.ReplyArray, res.Kind)
 }
+
+type fakeStatus struct{ calls int }
+
+func (f *fakeStatus) Status(context.Context) (protocol.Reply, error) {
+	f.calls++
+	return protocol.BulkStringArray([]string{"ready", "true"}), nil
+}
+
+// TestHandleRequest_HealthCommandsBypassStorage checks PING and STATUS never reach the storage: a fenced storage refuses
+// everything it executes, and these are the commands an operator uses to find that out.
+func TestHandleRequest_HealthCommandsBypassStorage(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockStorage := mocks.NewMockStorage(ctrl) // no expectations: any storage call fails the test
+	reporter := &fakeStatus{}
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	c := compute.New(parser.New(), mockStorage, logger, compute.WithStatus(reporter))
+
+	require.Equal(t, protocol.SimpleString("PONG"), c.Handle(t.Context(), "PING", nil))
+	res := c.Handle(t.Context(), "status", nil)
+	require.Equal(t, protocol.BulkStringArray([]string{"ready", "true"}), res)
+	require.Equal(t, 1, reporter.calls)
+
+	res = c.Handle(t.Context(), "PING", []string{"extra"})
+	require.Equal(t, protocol.CodeArity, res.Code)
+}
+
+func TestHandleRequest_StatusWithoutReporter(t *testing.T) {
+	t.Parallel()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	logger := slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil))
+	c := compute.New(parser.New(), mocks.NewMockStorage(ctrl), logger)
+	require.Equal(t, protocol.CodeUnavailable, c.Handle(t.Context(), "STATUS", nil).Code)
+}

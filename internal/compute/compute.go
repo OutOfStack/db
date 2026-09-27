@@ -14,6 +14,8 @@ import (
 const (
 	commandPromote     = "PROMOTE"
 	commandReplication = "REPLICATION"
+	commandPing        = "PING"
+	commandStatus      = "STATUS"
 )
 
 // Storage is an interface for a storage layer
@@ -32,11 +34,17 @@ type Admin interface {
 	Status(ctx context.Context) (protocol.Reply, error)
 }
 
+// StatusReporter answers STATUS with the node's readiness and identity (see internal/status).
+type StatusReporter interface {
+	Status(ctx context.Context) (protocol.Reply, error)
+}
+
 // Compute represents compute layer
 type Compute struct {
 	parser         Parser
 	storage        Storage
 	admin          Admin
+	status         StatusReporter
 	promoteEnabled bool
 	logger         *slog.Logger
 }
@@ -47,6 +55,11 @@ type Option func(*Compute)
 // WithAdmin wires a replication admin handler for PROMOTE and REPLICATION STATUS.
 func WithAdmin(admin Admin) Option {
 	return func(c *Compute) { c.admin = admin }
+}
+
+// WithStatus wires the STATUS reporter. Without one, STATUS is refused as unavailable.
+func WithStatus(status StatusReporter) Option {
+	return func(c *Compute) { c.status = status }
 }
 
 // WithPromoteEnabled permits PROMOTE when enabled is true. Off by default: promotion changes which node accepts
@@ -91,6 +104,9 @@ func (c *Compute) HandleRequest(ctx context.Context, cmd string, args []string) 
 	}
 	defer func() { c.logOutcome(cmd, args, started, reply, err) }()
 
+	if opsReply, handled, opsErr := c.handleOperations(ctx, cmd); handled {
+		return opsReply, opsErr
+	}
 	if adminReply, handled, adminErr := c.handleAdmin(ctx, cmd, args); handled {
 		return adminReply, adminErr
 	}
@@ -122,6 +138,23 @@ func (c *Compute) logOutcome(cmd string, args []string, started time.Time, reply
 	c.logger.Info("Command completed", attrs...)
 	if err != nil {
 		c.logger.Debug("Command error details", "error", err)
+	}
+}
+
+// handleOperations answers the health commands. They run above the storage layer on purpose: a fenced storage refuses
+// every command it executes, and a liveness or readiness probe has to keep answering in exactly that state.
+func (c *Compute) handleOperations(ctx context.Context, cmd string) (protocol.Reply, bool, error) {
+	switch cmd {
+	case commandPing:
+		return protocol.SimpleString("PONG"), true, nil
+	case commandStatus:
+		if c.status == nil {
+			return protocol.Reply{}, true, protocol.NewError(protocol.CodeUnavailable, "status is not available")
+		}
+		reply, err := c.status.Status(ctx)
+		return reply, true, err
+	default:
+		return protocol.Reply{}, false, nil
 	}
 }
 

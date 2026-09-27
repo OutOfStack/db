@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/OutOfStack/db/internal/datadir"
 	"github.com/OutOfStack/db/internal/protocol"
 	"github.com/OutOfStack/db/internal/wal"
 )
@@ -23,8 +24,10 @@ func TestGenerateGolden(t *testing.T) {
 		t.Skip("pass -compat.regenerate to rewrite the fixtures; see the flag's documentation first")
 	}
 
-	writeFixture(t, goldenPath(requestsFile), encodeGoldenRequests(t))
-	writeFixture(t, goldenPath(repliesFile), encodeGoldenReplies(t))
+	for _, set := range goldenWireSets {
+		writeFixture(t, goldenPath(set.requestsFile), encodeRequests(t, set.requests))
+		writeFixture(t, goldenPath(set.repliesFile), encodeReplies(t, set.replies))
+	}
 	generateData(t)
 }
 
@@ -64,6 +67,9 @@ func generateData(t *testing.T) {
 	if err = writer.Close(); err != nil {
 		t.Fatalf("close fixture WAL: %v", err)
 	}
+	if err = datadir.WriteManifest(dir, goldenManifest); err != nil {
+		t.Fatalf("write fixture manifest: %v", err)
+	}
 }
 
 func writeFixture(t *testing.T, path string, content []byte) {
@@ -73,12 +79,12 @@ func writeFixture(t *testing.T, path string, content []byte) {
 	}
 }
 
-// encodeGoldenRequests and encodeGoldenReplies produce the byte streams the reader test compares against. Both the
-// generator and the reader go through them, so the fixture is defined by exactly one encoding path.
-func encodeGoldenRequests(t *testing.T) []byte {
+// encodeRequests and encodeReplies produce the byte streams the reader test compares against. Both the generator and
+// the reader go through them, so a fixture is defined by exactly one encoding path.
+func encodeRequests(t *testing.T, requests []goldenRequest) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	for _, request := range goldenRequests {
+	for _, request := range requests {
 		if err := protocol.WriteCommand(&buf, request.cmd, request.args); err != nil {
 			t.Fatalf("encode %s: %v", request.cmd, err)
 		}
@@ -86,10 +92,10 @@ func encodeGoldenRequests(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
-func encodeGoldenReplies(t *testing.T) []byte {
+func encodeReplies(t *testing.T, replies []protocol.Reply) []byte {
 	t.Helper()
 	var buf bytes.Buffer
-	for i, reply := range goldenReplies {
+	for i, reply := range replies {
 		if err := protocol.WriteReply(&buf, reply); err != nil {
 			t.Fatalf("encode reply %d: %v", i, err)
 		}

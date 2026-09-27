@@ -119,6 +119,7 @@ linters:
       case:
         rules:
           yaml: snake
+          json: snake
   exclusions:
     generated: lax
     warn-unused: true

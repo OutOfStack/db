@@ -23,7 +23,7 @@ bin/
 requirements
 .claude/
 .codex/
-CLAUDE.MD
+CLAUDE.md
 AGENTS.md
 /docs/plans
 graphify-out/

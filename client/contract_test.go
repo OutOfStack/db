@@ -2,11 +2,11 @@ package client_test
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,6 +14,7 @@ import (
 	"github.com/OutOfStack/db/internal/engine"
 	"github.com/OutOfStack/db/internal/network"
 	"github.com/OutOfStack/db/internal/protocol"
+	"github.com/OutOfStack/db/internal/status"
 	"github.com/OutOfStack/db/internal/storage"
 	"github.com/OutOfStack/db/internal/wal"
 )
@@ -55,6 +56,8 @@ func TestServerErrorCodeMatrix(t *testing.T) {
 		{name: "INCR overflow", command: "INCR users overflow 9223372036854775807", code: client.CodeWrongType},
 		{name: "replication not enabled", command: "REPLICATION STATUS", code: client.CodeUnavailable},
 		{name: "PROMOTE without replication", command: "PROMOTE", code: client.CodeUnavailable},
+		{name: "PING with an argument", command: "PING hello", code: client.CodeArity},
+		{name: "STATUS with an argument", command: "STATUS verbose", code: client.CodeArity},
 	}
 
 	for _, tc := range tests {
@@ -337,21 +340,22 @@ func TestDurableServerRejectsOversizedRecord(t *testing.T) {
 	}
 }
 
-// TestMessageSizeLimitAppliesPerSide pins the asymmetry COMPATIBILITY.md documents, which is easy to assume away: the
-// server's max_message_size bounds requests it accepts, not replies it writes, and a client is protected only by its
-// own limit. Both halves are asserted because the promise is the pair, not either one.
-func TestMessageSizeLimitAppliesPerSide(t *testing.T) {
+// TestMessageSizeLimits pins how max_message_size bounds each direction, as COMPATIBILITY.md documents it. A server
+// refuses a request past its limit, and refuses a TABLES or KEYS listing past it too — as a coded TOOLARGE, with the
+// connection intact, rather than writing a reply a client with the same limit could not read. Other replies are not
+// bounded by the server: a value grown past the limit by APPEND is written in full, and what protects a client there is
+// its own limit, which fails locally as a transport error.
+func TestMessageSizeLimits(t *testing.T) {
 	t.Parallel()
 
-	const serverLimit = 128
+	const serverLimit = 256
 
-	addr, _ := startServerWithStorage(t, storage.New(engine.New()),
+	addr, _ := startServerWithStorage(t, storage.New(engine.New(), storage.WithListLimit(serverLimit)),
 		network.WithServerMaxMessageSize(serverLimit))
 
 	// A generous client limit, so what follows measures the server's behavior rather than the client's.
 	c := mustClientWithLimit(t, addr, 64)
 	ctx := t.Context()
-	// Enough keys that the listing exceeds both the server's limit and the 1KB client limit used further down.
 	for i := range 60 {
 		seed(t, c, ctx, "t", fmt.Sprintf("key-%020d", i), "v")
 	}
@@ -359,29 +363,33 @@ func TestMessageSizeLimitAppliesPerSide(t *testing.T) {
 	// A request past the server's limit is refused with TOOLARGE.
 	requireCode(t, c.Set(ctx, "t", "big", strings.Repeat("a", serverLimit)), client.CodeTooLarge)
 
-	// The reply to a legitimate request is not bounded by that same limit: the listing is written in full.
-	keys, err := c.Keys(ctx, "t")
-	if err != nil {
-		t.Fatalf("Keys() error = %v", err)
-	}
-	if len(keys) != 60 {
-		t.Fatalf("Keys() returned %d keys, want 60", len(keys))
-	}
-	var encoded bytes.Buffer
-	if err = protocol.WriteReply(&encoded, protocol.BulkStringArray(keys)); err != nil {
-		t.Fatalf("WriteReply: %v", err)
-	}
-	if encoded.Len() <= serverLimit {
-		t.Fatalf("the reply (%d bytes) did not exceed the server limit (%d), so it proves nothing",
-			encoded.Len(), serverLimit)
+	// So is a listing past it — refused whole, not truncated — and the same connection keeps working.
+	_, err := c.Keys(ctx, "t")
+	requireCode(t, err, client.CodeTooLarge)
+	if tables, tErr := c.Tables(ctx); tErr != nil || !slices.Equal(tables, []string{"t"}) {
+		t.Fatalf("Tables() after a refused listing = %v, %v; want [t]", tables, tErr)
 	}
 
-	// What bounds a reply is the reading client's own limit. A client configured below the listing refuses to decode it,
-	// and that is a transport error rather than a coded server error — the command itself was valid.
+	// Any other reply is written in full even past the server's limit: grow an array one small APPEND at a time.
+	for i := range 60 {
+		if _, aErr := c.Append(ctx, "t", "log", fmt.Sprintf("entry-%020d", i)); aErr != nil {
+			t.Fatalf("Append() error = %v", aErr)
+		}
+	}
+	value, err := c.Get(ctx, "t", "log")
+	if err != nil {
+		t.Fatalf("Get() of a value past the server limit: %v", err)
+	}
+	if len(value) <= serverLimit {
+		t.Fatalf("the value (%d bytes) did not exceed the server limit (%d), so it proves nothing", len(value), serverLimit)
+	}
+
+	// There a client is protected by its own limit. Refusing to decode is a transport error rather than a coded server
+	// error — the command itself was valid.
 	small := mustClientWithLimit(t, addr, 1)
-	_, err = small.Keys(ctx, "t")
+	_, err = small.Get(ctx, "t", "log")
 	if err == nil {
-		t.Fatal("Keys() under a 1KB client limit succeeded, want a size error")
+		t.Fatal("Get() under a 1KB client limit succeeded, want a size error")
 	}
 	if serverErr, ok := errors.AsType[*client.ServerError](err); ok {
 		t.Errorf("over-limit reply surfaced as *ServerError (code %q); it is a local transport error", serverErr.Code)
@@ -390,6 +398,50 @@ func TestMessageSizeLimitAppliesPerSide(t *testing.T) {
 	// The connection recovers: the client drops the socket and redials on the next call.
 	if _, err = small.Get(ctx, "t", "key-"+strings.Repeat("0", 20)); err != nil {
 		t.Errorf("Get() after an over-limit reply = %v, want the connection to have recovered", err)
+	}
+}
+
+// TestHealthCommands covers PING and STATUS through the public client: both answer on a direct connection, STATUS as
+// its frozen field list, and a pool refuses STATUS because it cannot say which server would be describing itself.
+func TestHealthCommands(t *testing.T) {
+	t.Parallel()
+
+	addr := startServer(t)
+	c := mustClient(t, addr)
+	ctx := t.Context()
+
+	if reply, err := c.Raw(ctx, "PING"); err != nil || reply != "PONG" {
+		t.Errorf("Raw(PING) = %q, %v; want PONG", reply, err)
+	}
+	requireCode(t, rawErr(t, c, ctx, "PING extra"), client.CodeArity)
+
+	reply, err := c.Raw(ctx, "STATUS")
+	if err != nil {
+		t.Fatalf("Raw(STATUS) error = %v", err)
+	}
+	lines := strings.Split(reply, "\n")
+	if len(lines) != 2*len(status.Fields) {
+		t.Fatalf("STATUS has %d lines, want %d", len(lines), 2*len(status.Fields))
+	}
+	for i, field := range status.Fields {
+		if lines[2*i] != field {
+			t.Errorf("STATUS field %d = %q, want %q", i, lines[2*i], field)
+		}
+	}
+	if lines[1] != "true" {
+		t.Errorf("STATUS ready = %q, want true", lines[1])
+	}
+
+	pooled, err := client.New(client.WithServers(client.Server{Address: addr, Role: client.RoleMaster}))
+	if err != nil {
+		t.Fatalf("New(pool) error = %v", err)
+	}
+	t.Cleanup(func() { _ = pooled.Close() })
+	if reply, err = pooled.Raw(ctx, "PING"); err != nil || reply != "PONG" {
+		t.Errorf("pooled Raw(PING) = %q, %v; want PONG", reply, err)
+	}
+	if _, err = pooled.Raw(ctx, "STATUS"); err == nil || !strings.Contains(err.Error(), "cannot be sent through a pool") {
+		t.Errorf("pooled Raw(STATUS) error = %v, want the pool to refuse it", err)
 	}
 }
 

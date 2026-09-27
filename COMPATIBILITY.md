@@ -12,7 +12,7 @@ Within the v1.x series there will be no incompatible change to:
 - the **Go API** of the `client` package (the only importable package; everything else lives under `internal/`),
 - the **wire protocol**: the command set, the reply shapes, and the error codes below,
 - the **configuration** files and environment variables,
-- the **storage formats**: WAL segments, snapshots, and tiered segments.
+- the **storage formats**: WAL segments, snapshots, tiered segments, and the data directory `MANIFEST`.
 
 A format may still evolve, but only behind a compatible reader — a v1.x build reads everything earlier v1.x builds
 wrote — or, where that is impossible, an offline migration tool shipped with the release that makes the change. A
@@ -62,11 +62,11 @@ A **reply** is one of five shapes:
 
 | Shape | Encoding | Used for |
 |-------|----------|----------|
-| Simple string | `+OK\r\n` | write acknowledgements, `TYPE` |
+| Simple string | `+OK\r\n` | write acknowledgements, `TYPE`, `PING` |
 | Bulk string | `$5\r\nAlice\r\n` | values |
 | Null | `$-1\r\n` | a missing key or field |
 | Integer | `:3\r\n` | `APPEND`'s new length |
-| Array | `*2\r\n…` | `TABLES`, `KEYS` |
+| Array | `*2\r\n…` | `TABLES`, `KEYS`, `STATUS`, `REPLICATION STATUS` |
 | Error | `-WRONGTYPE key holds string\r\n` | every failure |
 
 Edges of the subset, all frozen:
@@ -78,12 +78,14 @@ Edges of the subset, all frozen:
   Only the CLI's line splitting constrains what is convenient to type.
 - **Inline commands are not supported.** A request that is not an array of bulk strings is answered with a `PROTOCOL`
   error, after which the connection is closed.
-- **The message-size limit applies per side, not per exchange.** A server rejects a *request* larger than its
-  `max_message_size` with `TOOLARGE`; it does not bound the replies it writes, so a `KEYS` or `TABLES` listing can
-  exceed that limit. What protects a client is its own configured limit: it refuses to decode a reply past it. That
-  refusal is a local transport error rather than a coded `*ServerError` — nothing was wrong with the command, and the
-  server has already written the bytes — and the client drops the connection and redials on the next call. Size a
-  client's limit for the largest listing it means to read.
+- **The message-size limit bounds requests and listings.** A server rejects a *request* larger than its
+  `max_message_size` with `TOOLARGE`. It refuses a `TABLES` or `KEYS` listing whose reply would exceed the same limit
+  with `TOOLARGE` too — whole, never truncated, and with the connection left usable — so a client configured with the
+  server's limit can always read a listing it is sent. Other replies are not bounded by the server: an array or map
+  grown past the limit one `APPEND` or `HSET` at a time is written in full. What protects a client there is its own
+  configured limit: it refuses to decode a reply past it. That refusal is a local transport error rather than a coded
+  `*ServerError` — nothing was wrong with the command, and the server has already written the bytes — and the client
+  drops the connection and redials on the next call.
 
 ## Error codes
 
@@ -96,7 +98,7 @@ Every error reply begins with a code token, a space, and a human-readable messag
 | `UNKNOWNCMD` | no such command | a typo, or a command from a later version |
 | `ARITY` | wrong number of arguments | `GET users` |
 | `ARGUMENT` | an argument the command cannot interpret | empty table or key, unparsable value literal, non-numeric `INCR` delta |
-| `TOOLARGE` | past a configured or format limit | table name over 128 bytes, message over `max_message_size`, tiered storage full |
+| `TOOLARGE` | past a configured or format limit | table name over 128 bytes, request or `TABLES`/`KEYS` listing over `max_message_size`, tiered storage full |
 | `WRONGTYPE` | the key holds another type, or the arithmetic does not fit it | `INCR` on a string, `HGET` on an array, `INCR` past the int64 range |
 | `READONLY` | mutation sent to a replication standby | writes before a `PROMOTE` |
 | `UNAVAILABLE` | the server cannot serve this in its current state | storage fenced or latched into a terminal state (a failed WAL or tiered fsync), replication not enabled, `PROMOTE` disabled |
@@ -104,6 +106,32 @@ Every error reply begins with a code token, a space, and a human-readable messag
 A client that meets a code it does not recognize must treat it as `ERR`. Within v1.x a code is never removed and never
 given a new meaning; a condition that reports `ERR` today may later be given a narrower code, which is why unrecognized
 codes have to degrade rather than fail.
+
+## STATUS
+
+`STATUS` replies with an array of bulk strings alternating field names and values. The fields, in this order, are
+frozen:
+
+```
+ready state error role engine durability applied_lsn synced_lsn snapshot_lsn last_sync last_snapshot
+release protocol wal_format snapshot_format segment_format
+```
+
+A v1.x release may append fields after `segment_format`, and may add values to the enumerated fields (`state`: `ok`,
+`degraded`, `terminal`; `role`: `standalone`, `master`, `standby`; `durability`: `always`, `everysec`, `no`,
+`ephemeral`); it never removes, renames or reorders a field or changes what one means. Parse the reply by field name.
+Timestamps are RFC 3339 in UTC, or empty; the `error` value is at most 256 bytes.
+[docs/operations.md](docs/operations.md) defines every field. `STATUS` is an admin command: a pooled client refuses it
+rather than let the pool pick which server answers.
+
+## Data directory manifest
+
+A durable server writes `MANIFEST` into its data directory at every startup, once recovery has accepted the files: a
+JSON object with `manifest_version` (currently `1`), `engine` (`in_memory` or `tiered`), `formats` (each file kind's
+format version, e.g. `{"wal": 2, "snapshot": 3}`), `sync` (the sync policy, informational) and `release` (the writing
+build, informational). A reader ignores fields it does not know, so v1.x may add fields. Startup refuses a directory
+whose manifest carries another `manifest_version`, another engine than the configuration selects, or format versions
+the build does not read — before any database file is opened.
 
 ## Go client contract
 
@@ -133,9 +161,11 @@ The full contract is on the types in [`client`](client); this is the summary.
 
 ## Golden fixtures
 
-[`internal/compat/testdata/golden/v1`](internal/compat/testdata/golden/v1) holds byte-for-byte fixtures generated at
-v1.0: a WAL segment, a snapshot, and recorded request and reply streams covering every command and error shape. Tests in
-that package run on every build and fail if this build would read or write any of them differently.
+[`internal/compat/testdata/golden/v1`](internal/compat/testdata/golden/v1) holds byte-for-byte fixtures: a WAL segment,
+a snapshot and a `MANIFEST`, and recorded request and reply streams covering every command and error shape — the core
+set, plus an operations set freezing `PING`, `STATUS` (whose recorded field names the live reply is checked against) and
+the over-limit listing refusal. Tests in that package run on every build and fail if this build would read or write any
+of them differently.
 
 A v1.x release may add a fixture set for a newly frozen shape. It must never regenerate v1.0's — regenerating is how a
 format change gets committed instead of caught, which is why the generator is a flag-guarded test rather than a tool.

@@ -1,0 +1,30 @@
+# Commands that fail on purpose, one per failure kind. Every one is rejected with an error code and changes nothing;
+# the CLI reports each (with its line number when input is piped) and keeps going, then exits 1 because commands failed:
+#
+#   ./bin/db-cli < examples/errors.txt; echo "exit status $?"
+#
+# A line the CLI cannot split — an unterminated quote, say — or a lost connection ends the run immediately instead,
+# also with exit status 1.
+
+# Setup, so the wrong-type cases below have something to hit.
+SET errors text hello
+APPEND errors list 1
+
+# ARITY: missing value
+SET users name
+# ARITY: too many arguments
+GET users name extra
+# UNKNOWNCMD
+UNKNOWN foo
+# ARGUMENT: empty key
+GET users ""
+# ARGUMENT: malformed map literal
+SET types broken '{"a":'
+# ARGUMENT: non-numeric INCR delta
+INCR stats hits abc
+# WRONGTYPE: INCR on an array, HGET on a string
+INCR errors list
+HGET errors text field
+# UNAVAILABLE on a standalone server: replication is a preview feature that must be configured
+REPLICATION STATUS
+PROMOTE

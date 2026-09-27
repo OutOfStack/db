@@ -15,7 +15,7 @@ func TestEngine_Introspection(t *testing.T) {
 	t.Parallel()
 
 	eng := engine.New()
-	if got := eng.Tables(t.Context()); len(got) != 0 {
+	if got := mustList(t)(eng.Tables(t.Context(), 0)); len(got) != 0 {
 		t.Fatalf("Tables() = %v, want empty", got)
 	}
 	if eng.TableExists(t.Context(), "users") {
@@ -26,13 +26,13 @@ func TestEngine_Introspection(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got, want := eng.Tables(t.Context()), []string{"orders", "users"}; !reflect.DeepEqual(got, want) {
+	if got, want := mustList(t)(eng.Tables(t.Context(), 0)), []string{"orders", "users"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Tables() = %v, want %v", got, want)
 	}
-	if got, want := eng.Keys(t.Context(), "users"), []string{"a", "z"}; !reflect.DeepEqual(got, want) {
+	if got, want := mustList(t)(eng.Keys(t.Context(), "users", 0)), []string{"a", "z"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("Keys(users) = %v, want %v", got, want)
 	}
-	if got := eng.Keys(t.Context(), "missing"); len(got) != 0 {
+	if got := mustList(t)(eng.Keys(t.Context(), "missing", 0)); len(got) != 0 {
 		t.Errorf("Keys(missing) = %v, want empty", got)
 	}
 	if err := eng.Del(t.Context(), "orders", "id"); err != nil {
@@ -241,9 +241,9 @@ func TestEngine_ConcurrentAccess(t *testing.T) {
 		go func() {
 			table := fmt.Sprintf("table-%d", i%3)
 			for j := range numOps {
-				_ = eng.Tables(t.Context())
+				_, _ = eng.Tables(t.Context(), 0)
 				_ = eng.TableExists(t.Context(), table)
-				_ = eng.Keys(t.Context(), table)
+				_, _ = eng.Keys(t.Context(), table, 0)
 				key := fmt.Sprintf("key-%d-%d", i, j)
 				value := fmt.Sprintf("value-%d-%d", i, j)
 

@@ -87,13 +87,13 @@ func TestIntrospection(t *testing.T) {
 	_ = e.Set(ctx, "users", "b", "2")
 	_ = e.Set(ctx, "orders", "x", "9")
 
-	if tables := e.Tables(ctx); len(tables) != 2 || tables[0] != "orders" || tables[1] != "users" {
+	if tables, _ := e.Tables(ctx, 0); len(tables) != 2 || tables[0] != "orders" || tables[1] != "users" {
 		t.Fatalf("tables: %v", tables)
 	}
 	if !e.TableExists(ctx, "users") || e.TableExists(ctx, "nope") {
 		t.Fatal("table existence wrong")
 	}
-	if keys := e.Keys(ctx, "users"); len(keys) != 2 || keys[0] != "a" || keys[1] != "b" {
+	if keys, _ := e.Keys(ctx, "users", 0); len(keys) != 2 || keys[0] != "a" || keys[1] != "b" {
 		t.Fatalf("keys: %v", keys)
 	}
 	// Deleting the last key of a table drops the table.

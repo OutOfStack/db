@@ -240,6 +240,13 @@ func (a *replicationAdmin) close() error {
 	return nil
 }
 
+// currentRole reports the node's replication role for STATUS; it changes from standby to master on promotion.
+func (a *replicationAdmin) currentRole() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return roleName(a.role)
+}
+
 // Keys of the REPLICATION STATUS reply that describe the terminal state.
 const (
 	statusKeyState = "state"

@@ -27,3 +27,6 @@ jobs:
 
       - name: Run tests
         run: go test -race -vet=off ./...
+
+      - name: Backup and restore drill
+        run: make restore-drill
