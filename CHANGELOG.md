@@ -6,6 +6,7 @@ Before v1.0.0, a minor release may break compatibility; entries marked **Breakin
 [COMPATIBILITY.md](COMPATIBILITY.md) defines what a v1.x release may not break.
 
 Feature PRs collect changes under the planned next version; its GitHub release uses the matching `vX.Y.Z` tag.
+Prerelease tags such as `vX.Y.Z-rc.1` can share that version's section.
 The actual release date is recorded when the next version is started; see [RELEASING.md](RELEASING.md).
 
 ## [0.14.0] - Unreleased

@@ -31,6 +31,9 @@ Choose the planned next version in the feature PR, before merging. For example:
 
 Other feature PRs intended for the same release add entries to that section. Its comparison link points from the
 previous release tag to `HEAD`. The GitHub tag must match the heading: `v0.14.0` for `[0.14.0]`.
+Prereleases such as `v0.14.0-rc.1` may use that same `[0.14.0]` section; a dedicated `[0.14.0-rc.1]` section is also
+accepted. Release tags use valid SemVer prefixed with `v`, without build metadata (`+...`). Numeric version parts
+and numeric prerelease identifiers cannot have leading zeroes, and prerelease identifiers cannot be empty.
 
 No separate release-preparation PR or date-only commit is required. The `Unreleased` date marker records that the
 release was pending when the entry was written; GitHub records the actual publication date. When the next feature

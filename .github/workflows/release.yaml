@@ -24,15 +24,21 @@ jobs:
       - name: Check release version and changelog
         shell: bash
         run: |
-          if [[ ! $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "Release tag must use vX.Y.Z or vX.Y.Z-prerelease" >&2
+          number='(0|[1-9][0-9]*)'
+          identifier="($number|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+          # Numeric identifiers cannot have leading zeroes; prerelease identifiers must be nonempty.
+          pattern="^v$number\.$number\.$number(-$identifier(\.$identifier)*)?$"
+          if [[ ! $TAG =~ $pattern ]]; then
+            echo "Release tag must use valid SemVer vX.Y.Z or vX.Y.Z-prerelease (without build metadata)" >&2
             exit 1
           fi
-          if ! awk -v version="[${TAG#v}]" '
-            $1 == "##" && $2 == version { found = 1 }
+          version=${TAG#v}
+          base_version=${version%%-*}
+          if ! awk -v version="[$version]" -v base_version="[$base_version]" '
+            $1 == "##" && ($2 == version || $2 == base_version) { found = 1 }
             END { exit !found }
           ' CHANGELOG.md; then
-            echo "CHANGELOG.md has no section for ${TAG#v}" >&2
+            echo "CHANGELOG.md has no section for $version or its base version $base_version" >&2
             exit 1
           fi
 
