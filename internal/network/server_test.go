@@ -123,3 +123,54 @@ func TestShutdownTimeoutCancelsStalledHandlerWithoutCloseError(t *testing.T) {
 	_, err = protocol.ReadReply(bufio.NewReader(conn), 1024)
 	require.True(t, errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed), "ReadReply() error = %v", err)
 }
+
+func TestPanickingHandlerClosesOnlyItsConnection(t *testing.T) {
+	t.Parallel()
+	panics := make(chan struct{}, 1)
+	srv, err := network.NewTCPServer("127.0.0.1:0", slog.New(slog.DiscardHandler),
+		network.WithServerPanicHandler(func() { panics <- struct{}{} }))
+	require.NoError(t, err)
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- srv.Serve(func(_ context.Context, cmd string, _ []string) protocol.Reply {
+			if cmd == "BOOM" {
+				panic("handler bug")
+			}
+			return protocol.SimpleString("PONG")
+		})
+	}()
+	dial := func() (net.Conn, *bufio.Reader) {
+		dialer := net.Dialer{}
+		conn, dialErr := dialer.DialContext(t.Context(), "tcp", srv.Addr().String())
+		require.NoError(t, dialErr)
+		t.Cleanup(func() { _ = conn.Close() })
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+		return conn, bufio.NewReader(conn)
+	}
+
+	bystander, bystanderReader := dial()
+	victim, victimReader := dial()
+	require.NoError(t, protocol.WriteCommand(victim, "BOOM", nil))
+	// No reply: the command may have taken effect before panicking, so the client has to see an unknown outcome.
+	_, err = protocol.ReadReply(victimReader, 1024)
+	require.ErrorIs(t, err, io.EOF)
+	select {
+	case <-panics:
+	case <-time.After(time.Second):
+		t.Fatal("panic handler was not called")
+	}
+
+	ping := func(conn net.Conn, reader *bufio.Reader) {
+		require.NoError(t, protocol.WriteCommand(conn, "PING", nil))
+		reply, readErr := protocol.ReadReply(reader, 1024)
+		require.NoError(t, readErr)
+		require.Equal(t, protocol.SimpleString("PONG"), reply)
+	}
+	ping(bystander, bystanderReader)
+	ping(dial())
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	require.NoError(t, srv.Shutdown(ctx))
+	require.NoError(t, <-serveDone)
+}

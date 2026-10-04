@@ -8,7 +8,11 @@ COMMIT  ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)$(shell test -
 VERSION_PKG=github.com/OutOfStack/db/internal/version
 LDFLAGS=-X $(VERSION_PKG).release=$(VERSION) -X $(VERSION_PKG).commit=$(COMMIT)
 
-.PHONY: build build-db build-cli run run-cli test restore-drill lint clean generate docker-build docker-run
+# The linter version CI runs; keep .github/workflows/main.yaml in step with it.
+GOLANGCI_LINT_VERSION=v2.14.0
+
+.PHONY: build build-db build-cli run run-cli test restore-drill lint lint-install clean generate docker-build docker-run \
+	container-smoke dist
 
 build: build-db build-cli
 
@@ -36,11 +40,23 @@ restore-drill: build
 lint:
 	golangci-lint run
 
+lint-install:
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+
+# Release archives and SHA256SUMS for every supported and provided platform (see RELEASING.md). Without a VERSION
+# override the archives carry the git-describe version, which is enough for a dry run.
+dist:
+	VERSION=$(VERSION) COMMIT=$(COMMIT) ./scripts/dist.sh
+
 clean:
-	rm -rf bin
+	rm -rf bin dist
 
 docker-build:
 	docker build --build-arg VERSION=$(VERSION) --build-arg COMMIT=$(COMMIT) -t db .
+
+# Start, query, stop with SIGTERM, restart and query the image again (see scripts/container-smoke.sh). Needs Docker.
+container-smoke: docker-build build-cli
+	./scripts/container-smoke.sh db
 
 docker-run: docker-build
 	docker run --rm -p 127.0.0.1:3223:3223 -e DB_ADDRESS=0.0.0.0:3223 -e DB_ALLOW_REMOTE=true db

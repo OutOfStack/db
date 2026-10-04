@@ -2,6 +2,7 @@
 .github
 .idea
 bin
+dist
 docs
 *.md
 Dockerfile

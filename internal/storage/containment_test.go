@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/OutOfStack/db/internal/engine"
 	"github.com/OutOfStack/db/internal/storage"
@@ -127,5 +128,82 @@ func TestStorage_FenceBlocksSnapshot(t *testing.T) {
 		t.Fatal("snapshot written on a fenced storage")
 		return nil
 	})
+	require.ErrorIs(t, err, storage.ErrTerminal)
+}
+
+// TestStorage_PanickingApplyReleasesTheGate covers the apply gate under a recovered panic: a mutation already logged
+// under the next LSN, and so already past the fence check, still completes instead of waiting forever behind the one
+// that panicked and holding up shutdown.
+func TestStorage_PanickingApplyReleasesTheGate(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	mockEngine := mocks.NewMockEngine(gomock.NewController(t))
+	queued := make(chan struct{})
+	log := &fakeWAL{append: func(_ context.Context, _ string, args []string) (uint64, error) {
+		if args[1] == "next" {
+			close(queued)
+			return 2, nil
+		}
+		return 1, nil
+	}}
+	store := storage.New(mockEngine, storage.WithWAL(log))
+
+	mockEngine.EXPECT().Set(gomock.Any(), "t", "next", gomock.Any()).Return(nil)
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.Execute(ctx, "SET", []string{"t", "next", "v"})
+		done <- err
+	}()
+	<-queued
+
+	mockEngine.EXPECT().Set(gomock.Any(), "t", "boom", gomock.Any()).DoAndReturn(
+		func(context.Context, string, string, string) error { panic("engine invariant violated") })
+	require.Panics(t, func() { _, _ = store.Execute(ctx, "SET", []string{"t", "boom", "v"}) })
+
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("mutation queued behind a panicking apply never ran")
+	}
+}
+
+// TestStorage_PanickingMutationFencesBeforeSnapshot covers a snapshot racing a mutation that panics. The panicked record
+// is in the WAL but not (or only partly) in the engine, so a snapshot taken at that LSN would persist the wrong state
+// and prune the record that could repair it. The snapshot below passes its first fence check while the mutation still
+// holds the state lock, and must still refuse once it gets the lock.
+func TestStorage_PanickingMutationFencesBeforeSnapshot(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	mockEngine := mocks.NewMockEngine(gomock.NewController(t))
+	log := &fakeWAL{append: func(context.Context, string, []string) (uint64, error) { return 1, nil }}
+	store := storage.New(mockEngine, storage.WithWAL(log))
+
+	snapshotDone := make(chan error, 1)
+	// Reached only when the snapshot captures state; the write callback then reports the failure.
+	mockEngine.EXPECT().Range(gomock.Any()).AnyTimes()
+	mockEngine.EXPECT().Set(gomock.Any(), "t", "boom", gomock.Any()).DoAndReturn(
+		func(context.Context, string, string, string) error {
+			go func() {
+				snapshotDone <- store.Snapshot(ctx, func(context.Context, uint64, storage.SnapshotSource) error {
+					t.Error("snapshot captured the state a panicking mutation left behind")
+					return nil
+				})
+			}()
+			// Give the snapshot time to pass its first fence check and block on the state lock this mutation holds.
+			time.Sleep(50 * time.Millisecond)
+			panic("engine invariant violated")
+		})
+	require.Panics(t, func() { _, _ = store.Execute(ctx, "SET", []string{"t", "boom", "v"}) })
+
+	select {
+	case err := <-snapshotDone:
+		require.ErrorIs(t, err, storage.ErrTerminal)
+	case <-time.After(time.Second):
+		t.Fatal("snapshot did not return")
+	}
+	require.ErrorIs(t, store.Terminal(), storage.ErrTerminal)
+	require.Zero(t, log.pruned, "WAL was pruned past the panicked record")
+	_, err := store.Execute(ctx, "GET", []string{"t", "boom"})
 	require.ErrorIs(t, err, storage.ErrTerminal)
 }

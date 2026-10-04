@@ -1,6 +1,14 @@
 name: "Test and build"
 
-on: [push]
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # The release workflow runs these same checks against the tagged commit before it builds anything.
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -23,10 +31,31 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: latest
+          # Keep in step with GOLANGCI_LINT_VERSION in the Makefile.
+          version: v2.14.0
 
       - name: Run tests
         run: go test -race -vet=off ./...
 
       - name: Backup and restore drill
         run: make restore-drill
+
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: Build CLI
+        run: make build-cli
+
+      - name: Build image
+        run: docker build --build-arg VERSION=ci-smoke --build-arg COMMIT=${{ github.sha }} -t db:smoke .
+
+      - name: Container smoke test
+        run: VERSION=ci-smoke ./scripts/container-smoke.sh db:smoke
