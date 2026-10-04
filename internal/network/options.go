@@ -48,3 +48,12 @@ func WithServerMaxConnections(maxConnections int) TCPServerOption {
 		}
 	}
 }
+
+// WithServerPanicHandler sets a function called after a request handler panics, once the panic has been recovered and
+// logged. The panicking connection is closed either way; this hook lets the caller stop trusting state the handler may
+// have left half-changed.
+func WithServerPanicHandler(fn func()) TCPServerOption {
+	return func(s *TCPServer) {
+		s.onPanic = fn
+	}
+}

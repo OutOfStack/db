@@ -98,6 +98,9 @@ func newLogger(cfg config.ServerLoggingConfig) (*slog.Logger, func() error, erro
 	return slog.New(slog.NewJSONHandler(file, opts)), file.Close, nil
 }
 
+// errHandlerPanicked is the fence cause after a request handler panics; the server log holds the stack trace.
+var errHandlerPanicked = errors.New("a request handler panicked; restart the server")
+
 // startupOptions are the one-launch operator acknowledgements passed on the command line.
 type startupOptions struct {
 	allowEphemeralOverData bool
@@ -353,7 +356,11 @@ func serve(
 	srv, err := network.NewTCPServer(cfg.Network.Address, logger,
 		network.WithServerIdleTimeout(cfg.Network.IdleTimeout),
 		network.WithServerMaxMessageSize(cfg.Network.MaxMessageSizeKB*1024),
-		network.WithServerMaxConnections(cfg.Network.MaxConnections))
+		network.WithServerMaxConnections(cfg.Network.MaxConnections),
+		// A panic can leave a lock held or state half-changed, so the storage stops serving data until a restart recovers
+		// it from disk. A mutation fences the storage itself, before releasing its locks, so no snapshot can persist what
+		// it left; this catches a panic anywhere else in a command. PING and STATUS keep answering and report the cause.
+		network.WithServerPanicHandler(func() { store.Fence(errHandlerPanicked) }))
 	if err != nil {
 		return errors.Join(err, stopReplication(repl))
 	}

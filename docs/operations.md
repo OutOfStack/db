@@ -99,7 +99,7 @@ The directory holds:
 
 A backup is as good as the last restore drill that used it. [`scripts/restore-drill.sh`](../scripts/restore-drill.sh)
 (`make restore-drill`) runs this whole procedure against the real binaries — populate, stop, copy, wipe, restore,
-compare every value — and runs in CI on every push.
+compare every value — and runs in CI on every pull request and on `main`.
 
 ## Restore
 

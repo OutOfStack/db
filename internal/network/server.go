@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"sync"
 	"time"
 
@@ -41,6 +42,7 @@ type TCPServer struct {
 
 	idleTimeout    time.Duration
 	maxMessageSize int
+	onPanic        func()
 }
 
 // NewTCPServer creates a new Server instance with the given configuration and logger. It initializes the server with
@@ -238,7 +240,10 @@ func (s *TCPServer) handleConnection(handlerCtx context.Context, conn net.Conn, 
 		if !s.beginCommand(conn) {
 			return
 		}
-		response := handler(handlerCtx, cmd, args)
+		response, ok := s.dispatch(handlerCtx, conn, handler, cmd, args)
+		if !ok {
+			return
+		}
 		if err := s.writeReply(conn, response); err != nil {
 			s.logger.Error("Failed to send response", "error", err)
 			return
@@ -248,6 +253,34 @@ func (s *TCPServer) handleConnection(handlerCtx context.Context, conn net.Conn, 
 			return
 		}
 	}
+}
+
+// dispatch runs one command, containing a panic to the connection that sent it. A panicking command gets no reply and
+// its connection is closed: the command may have taken effect before it panicked, so the client must report the
+// outcome as unknown rather than as a failure. The panic handler then decides what the rest of the server may still
+// trust; the server itself keeps accepting and serving other connections.
+func (s *TCPServer) dispatch(
+	ctx context.Context,
+	conn net.Conn,
+	handler RequestHandler,
+	cmd string,
+	args []string,
+) (reply protocol.Reply, ok bool) {
+	defer func() {
+		recovered := recover()
+		if recovered == nil {
+			return
+		}
+		ok = false
+		// The panic value can carry request data, so it follows the same debug-only rule as command arguments.
+		s.logger.Error("Request handler panicked; closing connection", "address", conn.RemoteAddr(),
+			"stack", string(debug.Stack()))
+		s.logger.Debug("Panic details", "panic", recovered)
+		if s.onPanic != nil {
+			s.onPanic()
+		}
+	}()
+	return handler(ctx, cmd, args), true
 }
 
 func (s *TCPServer) readCommand(conn net.Conn, reader *bufio.Reader) (string, []string, bool) {

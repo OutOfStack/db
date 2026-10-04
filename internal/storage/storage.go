@@ -24,6 +24,8 @@ var (
 	// (a resync that failed part-way, or a replication history that diverged from the master's) and only a restart —
 	// with a reseed where the error says so — clears it.
 	ErrTerminal = protocol.NewError(protocol.CodeUnavailable, "storage is in a terminal state")
+
+	errMutationPanicked = errors.New("a mutation panicked; restart the server to recover from the WAL")
 )
 
 // Engine is an interface for a storage engine
@@ -137,17 +139,19 @@ func newApplyGate(next uint64) *applyGate {
 }
 
 // run waits until lsn is the next LSN to apply, runs fn, then releases the next LSN. The gate always advances: the WAL
-// record is already durable, so a benign engine error (e.g. deleting a missing key) must not stall later mutations.
+// record is already durable, so a benign engine error (e.g. deleting a missing key) must not stall later mutations, and
+// neither may a panic in fn, or every mutation queued behind it would wait forever and hold up shutdown.
 func (g *applyGate) run(lsn uint64, fn func() error) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for lsn != g.next {
 		g.cond.Wait()
 	}
-	err := fn()
-	g.next++
-	g.cond.Broadcast()
-	return err
+	defer func() {
+		g.next++
+		g.cond.Broadcast()
+	}()
+	return fn()
 }
 
 // Snapshot writes a state/LSN-consistent snapshot, then prunes incorporated WAL segments. Mutations are paused only
@@ -162,14 +166,16 @@ func (s *Storage) Snapshot(
 	s.snapshotMu.Lock()
 	defer s.snapshotMu.Unlock()
 
-	// ResetToSnapshot fences under this same lock, so a check here sees every fence a failed resync raised. Without it a
-	// resync that reset the WAL to the master's LSN but failed to publish the snapshot would let maintenance write the
-	// engine's older state under that newer LSN, and the restart that is supposed to repair the standby would trust it.
+	// The fence is checked with both locks held. ResetToSnapshot fences under snapshotMu, so this sees every fence a
+	// failed resync raised; without it a resync that reset the WAL to the master's LSN but failed to publish the snapshot
+	// would let maintenance write the engine's older state under that newer LSN, and the restart that is supposed to
+	// repair the standby would trust it. A panicking mutation fences before it releases mu, so this also never captures
+	// the state such a mutation left behind.
+	s.mu.Lock()
 	if err := s.Terminal(); err != nil {
+		s.mu.Unlock()
 		return err
 	}
-
-	s.mu.Lock()
 	lsn := s.wal.LastLSN()
 	source := captureState(s.engine)
 	s.mu.Unlock()
@@ -410,12 +416,25 @@ func (s *Storage) mutate(ctx context.Context, command string, args []string, app
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	// Deferred after the lock is taken, so it runs before the lock is released: a snapshot waiting for the lock then
+	// sees the fence instead of capturing the state the panic left, under an LSN that includes its record.
+	defer s.fenceOnPanic()
 
 	lsn, err := s.wal.Append(ctx, command, args)
 	if err != nil {
 		return err
 	}
 	return s.gate.run(lsn, apply)
+}
+
+// fenceOnPanic fences the storage if the calling mutation is panicking, then lets the panic continue. The record may
+// already be in the WAL while the engine holds none or part of it, and only a restart that replays the WAL repairs
+// that; until then nothing may read the state or persist it in a snapshot.
+func (s *Storage) fenceOnPanic() {
+	if recovered := recover(); recovered != nil {
+		s.Fence(errMutationPanicked)
+		panic(recovered)
+	}
 }
 
 // ReadOnly reports whether mutating commands are currently rejected.

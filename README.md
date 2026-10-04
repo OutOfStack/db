@@ -27,7 +27,7 @@ The project consists of three main components:
   truncates a torn tail
 - Replication (preview): asynchronous master/standby WAL shipping with manual `PROMOTE`
 - Operations: `PING` and `STATUS` health checks, self-describing data directories, and a documented offline backup and
-  restore procedure that CI drills on every push (see [docs/operations.md](docs/operations.md))
+  restore procedure that CI drills on every change (see [docs/operations.md](docs/operations.md))
 - Connection limiting to prevent resource exhaustion
 - **Master/Standby Connection Pooling** with read failover and retry; writes reroute only after a manual promotion
 - Configurable server selection strategies (master_first, round_robin, random)
@@ -40,6 +40,8 @@ Generally available, supported for production use:
 - The public Go client library and the CLI
 - The documented RESP2 command subset and typed literals
 - Deployment on loopback or an explicitly trusted private network
+- Linux on amd64 or arm64. macOS and Windows builds are provided for development and evaluation, but durable
+  deployments there are not supported (see [RELEASING.md](RELEASING.md#platforms))
 
 What a v1.x release promises about each of these — the Go API, the wire subset and error codes, the configuration, and
 the on-disk formats — is written down in [COMPATIBILITY.md](COMPATIBILITY.md).
@@ -319,6 +321,25 @@ Server settings can be overridden with environment variables, which take the hig
 - `DB_LOG_LEVEL` — log level
 - `DB_LOG_OUTPUT` — log output file path
 
+## Installing
+
+Each release on the [releases page](https://github.com/OutOfStack/db/releases) carries an archive per platform
+(`db_<version>_<os>_<arch>.tar.gz`, holding both `db` and `db-cli`) and a `SHA256SUMS` file. Check the archive before
+unpacking it:
+
+```bash
+VERSION=v1.0.0  # the release to install
+curl -LO "https://github.com/OutOfStack/db/releases/download/$VERSION/db_${VERSION}_linux_amd64.tar.gz"
+curl -LO "https://github.com/OutOfStack/db/releases/download/$VERSION/SHA256SUMS"
+sha256sum -c --ignore-missing SHA256SUMS
+tar -xzf "db_${VERSION}_linux_amd64.tar.gz"
+"./db_${VERSION}_linux_amd64/db" -version
+```
+
+The server image is published for `linux/amd64` and `linux/arm64` as `ghcr.io/outofstack/db:<version>` (without the
+leading `v`, e.g. `1.0.0`); see [With Docker](#with-docker) for how to run it. To build from source instead, see
+[Building](#building).
+
 ## Running the Server
 
 The server has no authentication or TLS. Use loopback or an explicitly trusted, isolated private network; public or
@@ -372,12 +393,12 @@ make run
 
 ### With Docker:
 ```bash
-make docker-run
-# or
-docker build -t db .
 docker run --rm -p 127.0.0.1:3223:3223 \
-  -e DB_ADDRESS=0.0.0.0:3223 -e DB_ALLOW_REMOTE=true db
+  -e DB_ADDRESS=0.0.0.0:3223 -e DB_ALLOW_REMOTE=true ghcr.io/outofstack/db:1.0.0
 ```
+
+The examples below use a locally built image named `db`; `make docker-run` builds and starts it, or build it with
+`docker build -t db .`. A published image works the same way in its place.
 
 The image itself defaults to loopback **inside the container**. Publishing a port alone does not make that listener
 reachable from the host. The quickstart explicitly opts into binding all container interfaces while publishing only on
@@ -648,7 +669,10 @@ go build -o bin/db-cli ./cmd/db-cli
 │   └── db-cli/                  # CLI client
 │       └── main.go
 ├── examples/                    # CLI scripts: smoke.txt (must exit 0) and errors.txt (fails on purpose)
-├── scripts/restore-drill.sh     # Offline backup and restore drill, run in CI
+├── scripts/
+│   ├── container-smoke.sh       # Start, query, SIGTERM and restart the image, run in CI
+│   ├── dist.sh                  # Release archives and checksums (make dist)
+│   └── restore-drill.sh         # Offline backup and restore drill, run in CI
 ├── config.client.example.yaml   # Example client configuration
 ├── config.server.example.yaml   # Example server configuration
 ├── example-pool-config.yaml     # Example pool configuration
@@ -680,10 +704,25 @@ Run the offline backup and restore drill against freshly built binaries:
 make restore-drill
 ```
 
-Run linter:
+Run linter (`make lint-install` installs the version CI uses):
 ```bash
 make lint
 ```
+
+Smoke-test the container image (needs Docker):
+```bash
+make container-smoke
+```
+
+Build the release archives and checksums into `dist/` — the same ones a release publishes, see
+[RELEASING.md](RELEASING.md):
+```bash
+make dist VERSION=v0.0.0-dryrun
+```
+
+Feature PRs add changelog entries under the planned next version. After merging to `main`, create the matching tag
+and publish the release through GitHub; CI builds and uploads the artifacts automatically. See
+[RELEASING.md](RELEASING.md).
 
 Clean build artifacts:
 ```bash
@@ -742,7 +781,10 @@ that reports `ERR` today may later be given a narrower one. See [COMPATIBILITY.m
 Beyond command errors:
 
 - Network errors are logged and handled gracefully
-- Server implements panic recovery for client handlers
+- A command that panics does not take the server down. Its connection is closed without a reply, so the client
+  reports the outcome as unknown (the command may have taken effect first), and the stack trace is logged. The
+  storage is then fenced: data commands answer `UNAVAILABLE`, `PING` and `STATUS` keep answering and report the
+  cause, and a restart recovers from disk
 - Connection limit exceeded: new connections are gracefully rejected with logging
 
 ## Connection Management
@@ -778,3 +820,7 @@ The server uses structured logging with configurable levels:
 - **Error**: Error conditions requiring attention
 
 Logs can be directed to stdout or a file based on configuration.
+
+## License
+
+[MIT](LICENSE)
