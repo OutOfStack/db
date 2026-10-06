@@ -25,6 +25,11 @@ The actual release date is recorded when the next version is started.
 - `RELEASING.md` is no longer part of the repository or the release archives. The supported-platform table moved to
   the README's [Platforms](README.md#platforms) section.
 
+### Fixed
+
+- A pooled call that hit its own deadline could mark a healthy server failed, sending later reads to a standby for the
+  whole failure timeout. Expired deadlines are now always treated as the caller giving up.
+
 ## [0.14.0] - 2026-10-04
 
 ### Added

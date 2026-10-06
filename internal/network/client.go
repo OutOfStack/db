@@ -93,6 +93,19 @@ func (tc *TCPClient) Send(ctx context.Context, cmd string, args []string) (proto
 	return resp, err
 }
 
+// ContextErr is ctx.Err, except that it also reports a deadline that has already passed. A context learns of its
+// deadline from a timer of its own, so for a moment afterwards it still looks live while I/O bound to the same deadline
+// has already failed. That failure is the caller's, and must not be blamed on the connection or the server.
+func ContextErr(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 // enter waits for this command's turn on the connection. Queueing behind another command is part of the call, so it
 // ends when the caller's context does — otherwise a request with a 10ms deadline could sit behind one still inside its
 // minute-long idle timeout.
@@ -136,7 +149,7 @@ func (tc *TCPClient) attempt(ctx, sendCtx context.Context, cmd string, args []st
 	frame := &frameWriter{w: conn}
 	if err = protocol.WriteCommand(frame, cmd, args); err != nil {
 		tc.drop(conn)
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := ContextErr(ctx); ctxErr != nil {
 			return protocol.Reply{}, false, ctxErr
 		}
 		if mutation && !frame.short {
@@ -161,12 +174,12 @@ func (tc *TCPClient) attempt(ctx, sendCtx context.Context, cmd string, args []st
 
 	if mutation {
 		cause := err
-		if ctxErr := ctx.Err(); ctxErr != nil {
+		if ctxErr := ContextErr(ctx); ctxErr != nil {
 			cause = ctxErr
 		}
 		return protocol.Reply{}, false, fmt.Errorf("%w: %w", ErrOutcomeUnknown, cause)
 	}
-	if ctxErr := ctx.Err(); ctxErr != nil {
+	if ctxErr := ContextErr(ctx); ctxErr != nil {
 		return protocol.Reply{}, false, ctxErr
 	}
 	// A read-only command has no side effects, so a broken connection is worth one more try. A decode error is not: the
