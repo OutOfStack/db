@@ -13,6 +13,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
@@ -35,27 +36,33 @@ jobs:
           version: v2.14.0
 
       - name: Run tests
-        run: go test -race -vet=off ./...
+        run: go test ./...
 
-      - name: Backup and restore drill
-        run: make restore-drill
+      - name: Vet
+        run: go vet ./...
 
-  container:
-    runs-on: ubuntu-latest
+      - name: Race detection
+        run: go test -race ./...
+
+  # A release verifies its real archives and registry images in its own verify job instead of these local builds.
+  artifacts:
+    if: github.event_name != 'release'
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
           cache: true
 
-      - name: Build CLI
-        run: make build-cli
-
       - name: Build image
-        run: docker build --build-arg VERSION=ci-smoke --build-arg COMMIT=${{ github.sha }} -t db:smoke .
+        run: docker build --build-arg VERSION=ci-verification --build-arg COMMIT="$GITHUB_SHA" -t db:smoke .
 
-      - name: Container smoke test
-        run: VERSION=ci-smoke ./scripts/container-smoke.sh db:smoke
+      - name: Verify native archive and container
+        run: IMAGE=db:smoke make release-verify VERSION=ci-verification COMMIT="$GITHUB_SHA"

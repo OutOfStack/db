@@ -7,13 +7,34 @@ Before v1.0.0, a minor release may break compatibility; entries marked **Breakin
 
 Feature PRs collect changes under the planned next version; its GitHub release uses the matching `vX.Y.Z` tag.
 Prerelease tags such as `vX.Y.Z-rc.1` can share that version's section.
-The actual release date is recorded when the next version is started; see [RELEASING.md](RELEASING.md).
+The actual release date is recorded when the next version is started.
 
-## [0.14.0] - Unreleased
+## [1.0.0] - Unreleased
 
 ### Added
 
-- `LICENSE` (MIT), this changelog, and [RELEASING.md](RELEASING.md), the release checklist.
+- Release verification against checksum-verified archives: CLI contracts, lost/partial reply mutation safety, abrupt
+  recovery, corruption preservation, lifecycle checks, frozen v1 fixtures and the offline restore drill.
+- A reproducible Linux soak with state verification, WAL rotation, snapshots, restart/restore, connection limits and
+  resource ceilings and sustained-growth checks. CI runs short checks on PRs and offers a manual three-hour soak
+  for v1 RC sign-off. Both supported Linux archives and exact image digests are verified on native runners before
+  release archives and image tags are published.
+
+### Removed
+
+- `RELEASING.md` is no longer part of the repository or the release archives. The supported-platform table moved to
+  the README's [Platforms](README.md#platforms) section.
+
+### Fixed
+
+- A pooled call that hit its own deadline could mark a healthy server failed, sending later reads to a standby for the
+  whole failure timeout. Expired deadlines are now always treated as the caller giving up.
+
+## [0.14.0] - 2026-10-04
+
+### Added
+
+- `LICENSE` (MIT), this changelog, and `RELEASING.md`, the release checklist.
 - Release artifacts: publishing a GitHub release for `vX.Y.Z` builds server and CLI archives for Linux (amd64, arm64),
   macOS (amd64, arm64) and Windows (amd64) with a `SHA256SUMS` file, and a multi-arch container image at
   `ghcr.io/outofstack/db`. `make dist` builds the same archives locally.
@@ -172,7 +193,8 @@ The v0.1.1 and v0.1.2 tags mark the same changes.
 - TCP server and CLI client with `SET`, `GET` and `DEL`, YAML configuration, and structured logging.
 - Client-side master/standby connection pool with selection strategies, retries and read failover.
 
-[0.14.0]: https://github.com/OutOfStack/db/compare/v0.13.0...HEAD
+[1.0.0]: https://github.com/OutOfStack/db/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/OutOfStack/db/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/OutOfStack/db/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/OutOfStack/db/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/OutOfStack/db/compare/v0.10.0...v0.11.0

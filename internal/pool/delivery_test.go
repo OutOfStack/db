@@ -156,6 +156,39 @@ func TestClient_CancelDoesNotQuarantineServer(t *testing.T) {
 	}
 }
 
+// laggingContext is a context whose deadline has passed but whose own timer has not fired yet. A real one exists for
+// a moment after every deadline, and I/O bound to that deadline can fail inside that window.
+type laggingContext struct{ context.Context } //nolint:containedctx // the test needs a context that misreports itself
+
+func (laggingContext) Deadline() (time.Time, bool) { return time.Now().Add(-time.Second), true }
+
+// TestClient_ExpiredDeadlineDoesNotQuarantineServer pins the window TestClient_CancelDoesNotQuarantineServer can only
+// hit by chance: the caller's deadline has failed the I/O, but ctx.Err is still nil.
+func TestClient_ExpiredDeadlineDoesNotQuarantineServer(t *testing.T) {
+	t.Parallel()
+
+	var masterHits, standbyHits atomic.Int32
+	masterAddr := startHandler(t, okHandler(&masterHits))
+	standbyAddr := startHandler(t, okHandler(&standbyHits))
+
+	client := newPool(t, []pool.ServerConfig{
+		{Address: masterAddr, Role: pool.RoleMaster},
+		{Address: standbyAddr, Role: pool.RoleStandby},
+	}, pool.StrategyMasterFirst)
+
+	if _, err := client.Send(laggingContext{t.Context()}, "GET", []string{"users", "name"}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Send() error = %v, want context.DeadlineExceeded", err)
+	}
+	// once every server is marked failed the selector resets, so a later read cannot show the quarantine; the attempt on
+	// the standby can
+	if got := client.GetActiveServers(); len(got) != 1 || got[0] != masterAddr {
+		t.Errorf("servers tried = %v, want only the master %s: the expired call quarantined it", got, masterAddr)
+	}
+	if masterHits.Load()+standbyHits.Load() != 0 {
+		t.Error("a command with an expired deadline reached a server")
+	}
+}
+
 // newDeadPool builds a pool of unreachable servers with a long retry delay, so a test can prove that something other
 // than the delay itself (context cancellation, Close) is what ends the call.
 func newDeadPool(t *testing.T, retryDelay time.Duration) *pool.Client {

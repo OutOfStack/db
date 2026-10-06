@@ -83,7 +83,7 @@ func (c *Client) Send(ctx context.Context, cmd string, args []string) (protocol.
 			// A call the caller abandoned says nothing about the server: it may have given up while queued for the
 			// connection, before a single byte reached the network. Marking the server failed would route later reads away
 			// from a healthy node for the whole failure timeout, on the strength of one impatient caller.
-			if ctx.Err() != nil {
+			if network.ContextErr(ctx) != nil {
 				return protocol.Reply{}, fmt.Errorf("failed to send to %s: %w", server.Address, err)
 			}
 			c.selector.MarkFailed(server.Address)
