@@ -1,4 +1,8 @@
 version: "2"
+run:
+  # Also lint the black-box release checks in test/release, which build only with this tag.
+  build-tags:
+    - release
 output:
   formats:
     text:

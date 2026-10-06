@@ -41,7 +41,7 @@ Generally available, supported for production use:
 - The documented RESP2 command subset and typed literals
 - Deployment on loopback or an explicitly trusted private network
 - Linux on amd64 or arm64. macOS and Windows builds are provided for development and evaluation, but durable
-  deployments there are not supported (see [RELEASING.md](RELEASING.md#platforms))
+  deployments there are not supported (see [Platforms](#platforms))
 
 What a v1.x release promises about each of these — the Go API, the wire subset and error codes, the configuration, and
 the on-disk formats — is written down in [COMPATIBILITY.md](COMPATIBILITY.md).
@@ -74,6 +74,16 @@ Preview caveats:
   file is restored. Only a record header cut short at the end of the newest segment is truncated as a crash tail; a
   header whose lengths reach past the end of the file is reported with its offset and left in place, since a crash
   and a corrupt length look the same there and truncating would delete every intact record behind it
+
+### Platforms
+
+| Platform | Status |
+|----------|--------|
+| Linux amd64, arm64 | Supported, including durable (WAL or tiered) deployments. The container image is Linux only |
+| macOS amd64, arm64 | Development and evaluation only; durable deployments unsupported |
+| Windows amd64 | Development and evaluation only; durable deployments unsupported |
+
+Crash consistency is untested on macOS and Windows. The server also does not fsync directories on Windows.
 
 ## Commands
 
@@ -669,6 +679,7 @@ go build -o bin/db-cli ./cmd/db-cli
 │   └── db-cli/                  # CLI client
 │       └── main.go
 ├── examples/                    # CLI scripts: smoke.txt (must exit 0) and errors.txt (fails on purpose)
+├── test/release/                # Black-box release checks (Go, `release` build tag) and the soak
 ├── scripts/
 │   ├── container-smoke.sh       # Start, query, SIGTERM and restart the image, run in CI
 │   ├── dist.sh                  # Release archives and checksums (make dist)
@@ -714,15 +725,27 @@ Smoke-test the container image (needs Docker):
 make container-smoke
 ```
 
-Build the release archives and checksums into `dist/` — the same ones a release publishes, see
-[RELEASING.md](RELEASING.md):
+Build the release archives and checksums into `dist/` — the same ones a release publishes:
 ```bash
 make dist VERSION=v0.0.0-dryrun
 ```
 
+Verify a host archive in `dist/verify/`, including the fault checks, restore drill and short soak (Linux and GNU
+coreutils):
+```bash
+make release-verify
+```
+
+Run the complete local gate, including Go checks and Docker smoke:
+```bash
+make release-check
+```
+
+For v1 RC sign-off, run the manual **Release soak** action or `make release-check SOAK_SECONDS=10800`.
+Ordinary releases use the short checks. See [release verification](test/release/README.md) for coverage and limits.
+
 Feature PRs add changelog entries under the planned next version. After merging to `main`, create the matching tag
-and publish the release through GitHub; CI builds and uploads the artifacts automatically. See
-[RELEASING.md](RELEASING.md).
+and publish the release through GitHub; CI builds and uploads the artifacts automatically.
 
 Clean build artifacts:
 ```bash

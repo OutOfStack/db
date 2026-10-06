@@ -1,13 +1,18 @@
 name: "Release"
 
-# Publishing a GitHub release builds its archives, checksums and multi-arch image after CI passes on the tagged
-# commit. Release notes are maintained on GitHub; the workflow only attaches assets to the existing release.
+# Publishing a GitHub release builds its archives and checksums, verifies them and per-architecture images on native
+# runners once CI passes on the tagged commit, and only then tags the image and uploads the archives. Release notes are
+# maintained on GitHub; the workflow only attaches assets to the existing release.
 on:
   release:
     types: [published]
 
 permissions:
   contents: read
+
+env:
+  TAG: ${{ github.event.release.tag_name }}
+  IMAGE_NAME: ghcr.io/outofstack/db
 
 concurrency:
   group: release-${{ github.event.release.tag_name }}
@@ -16,8 +21,6 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
-    env:
-      TAG: ${{ github.event.release.tag_name }}
     steps:
       - uses: actions/checkout@v7
 
@@ -46,71 +49,131 @@ jobs:
     needs: validate
     uses: ./.github/workflows/main.yaml
 
+  # Archives build while CI runs; nothing is pushed or published until both have passed.
   binaries:
-    needs: ci
+    needs: validate
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    env:
-      TAG: ${{ github.event.release.tag_name }}
-      GH_TOKEN: ${{ github.token }}
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
           cache: true
 
-      - name: Build archives and checksums
+      - name: Build archives and checksums once
         run: make dist VERSION="$TAG" COMMIT="$GITHUB_SHA"
 
-      - name: Upload release assets
-        run: gh release upload "$TAG" dist/* --clobber
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-archives
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
 
-  image:
-    needs: ci
-    runs-on: ubuntu-latest
+  verify:
+    needs: [binaries, ci]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: write
     env:
-      TAG: ${{ github.event.release.tag_name }}
+      ARCH: ${{ matrix.arch }}
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Go
-        uses: actions/setup-go@v7
+      # The black-box checks are Go tests in this checkout; they run against the downloaded archive's binaries.
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.27'
           cache: true
 
-      - name: Build CLI
-        run: make build-cli
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-archives
+          path: dist
 
       - uses: docker/setup-buildx-action@v4
 
-      - name: Build image for the smoke test
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      # Digest-only pushes make the exact registry bytes available for testing without publishing release tags.
+      - name: Build candidate image by digest
+        id: candidate
         uses: docker/build-push-action@v7
         with:
           context: .
-          load: true
-          tags: db:smoke
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           build-args: |
             VERSION=${{ env.TAG }}
             COMMIT=${{ github.sha }}
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=release-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.arch }}
 
-      - name: Container smoke test
-        run: VERSION="$TAG" ./scripts/container-smoke.sh db:smoke
+      - name: Verify the archive and exact registry image on its native architecture
+        env:
+          DIGEST: ${{ steps.candidate.outputs.digest }}
+        run: |
+          image="$IMAGE_NAME@$DIGEST"
+          docker pull --platform "linux/$ARCH" "$image"
+          test "$(docker image inspect --format '{{.Architecture}}' "$image")" = "$ARCH"
+          VERSION="$TAG" IMAGE="$image" ./test/release/run.sh "dist/db_${TAG}_linux_${ARCH}.tar.gz"
+          mkdir -p verified-digests
+          printf '%s\n' "$DIGEST" > "verified-digests/$ARCH"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: verified-image-${{ matrix.arch }}
+          path: verified-digests/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-archives
+          path: dist
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: verified-image-*
+          path: verified-digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v4
 
       - name: Image metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          # Pre-release tags (v1.0.0-rc.1) are published under their own version only, never as latest or X.Y.
-          images: ghcr.io/outofstack/db
+          # Prerelease images receive their own version only, never latest or X.Y.
+          images: ${{ env.IMAGE_NAME }}
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
@@ -121,15 +184,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build and push
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            VERSION=${{ env.TAG }}
-            COMMIT=${{ github.sha }}
-          cache-from: type=gha
+      - name: Publish manifest from verified digests without rebuilding
+        env:
+          IMAGE_TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          sources=()
+          for arch in amd64 arm64; do
+            digest=$(cat "verified-digests/$arch")
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || exit 1
+            sources+=("$IMAGE_NAME@$digest")
+          done
+          tags=()
+          while IFS= read -r tag; do
+            [[ -n $tag ]] && tags+=(--tag "$tag")
+          done <<< "$IMAGE_TAGS"
+          ((${#tags[@]} > 0))
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"
+
+      - name: Upload the verified release archives
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS)
+          gh release upload "$TAG" dist/* --clobber

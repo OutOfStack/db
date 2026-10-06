@@ -26,5 +26,6 @@ requirements
 .codex/
 CLAUDE.md
 AGENTS.md
+RELEASING.md
 /docs/plans
 graphify-out/

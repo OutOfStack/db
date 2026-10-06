@@ -1,0 +1,30 @@
+name: "Release soak"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-soak-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 210
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: '1.27'
+          cache: true
+
+      - name: Build image
+        run: docker build --build-arg VERSION=soak --build-arg COMMIT="$GITHUB_SHA" -t db:soak .
+
+      - name: Verify artifacts and three-hour soak
+        run: IMAGE=db:soak make release-verify VERSION=soak COMMIT="$GITHUB_SHA" SOAK_SECONDS=10800

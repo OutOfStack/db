@@ -11,8 +11,9 @@ VERSION_PKG=github.com/OutOfStack/db/internal/version
 LDFLAGS="-s -w -X $VERSION_PKG.release=$VERSION -X $VERSION_PKG.commit=$COMMIT"
 # Preserve repository paths so links between the included documents resolve.
 FILES=(
-	LICENSE README.md CHANGELOG.md COMPATIBILITY.md SECURITY.md RELEASING.md docs/operations.md
+	LICENSE README.md CHANGELOG.md COMPATIBILITY.md SECURITY.md docs/operations.md
 	examples/smoke.txt examples/errors.txt config.server.example.yaml config.client.example.yaml
+	scripts/restore-drill.sh scripts/container-smoke.sh
 )
 
 mkdir -p "$DIST"
